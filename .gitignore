@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.autoshim/cache/
+.autoshim/changes/
+fixtures/specs/downloaded/
