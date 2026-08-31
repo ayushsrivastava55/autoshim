@@ -1,0 +1,29 @@
+id: stripe
+display_name: Stripe
+homepage: https://stripe.com
+docs_url: https://docs.stripe.com
+changelog_url: https://docs.stripe.com/changelog
+openapi_url: https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json
+github_repo: stripe/openapi
+packages:
+  npm: [stripe]
+  pypi: [stripe]
+  rubygems: [stripe]
+import_patterns:
+  javascript: ["require('stripe')", "require(\"stripe\")", "from 'stripe'", "from \"stripe\"", "new Stripe("]
+  python: ["import stripe", "from stripe"]
+watch:
+  - type: openapi
+    url: https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json
+    detection: exact
+  - type: github_release
+    repo: stripe/openapi
+  - type: page
+    url: https://docs.stripe.com/changelog
+    detection: semantic
+    instructions: >
+      Alert on new API version sections, deprecations, removals, newly required
+      fields, and breaking changes. Ignore navigation, marketing, and cosmetic edits.
+heal:
+  languages: [javascript, typescript, python]
+  notes: "Stripe pins API version via apiVersion in the client constructor; changing behavior often requires bumping apiVersion."

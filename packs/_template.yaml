@@ -1,0 +1,56 @@
+# Pack template: use this as a reference for the structure and fields.
+# All fields are described below. Only `id`, `display_name`, `packages`, `import_patterns`, and `watch` are required.
+
+# Unique identifier for the pack (use lowercase with underscores, no spaces)
+id: example
+
+# Human-readable name displayed in UIs
+display_name: Example Vendor
+
+# Optional: vendor's main website
+homepage: https://example.com
+
+# Optional: official API documentation
+docs_url: https://docs.example.com
+
+# Optional: changelog or release notes page
+changelog_url: https://changelog.example.com
+
+# Optional: raw OpenAPI/Swagger spec URL (often on GitHub)
+openapi_url: https://raw.githubusercontent.com/example/example-openapi/main/openapi.yaml
+
+# Optional: GitHub repository containing the API spec or SDK
+github_repo: example/example-openapi
+
+# Required: SDK packages by ecosystem (npm, pypi, gomod, rubygems)
+# Maps each ecosystem to a list of package names
+packages:
+  npm: [example]
+  pypi: [example-sdk]
+
+# Required: substring patterns to detect imports in source code
+# Maps language names to lists of import patterns to match
+import_patterns:
+  javascript: ["require('example')", 'require("example")', "from 'example'", 'from "example"']
+  python: ["import example", "from example"]
+
+# Required: watch targets for monitoring API changes
+# Each target specifies how and where to watch for changes
+watch:
+  - type: openapi
+    url: https://raw.githubusercontent.com/example/example-openapi/main/openapi.yaml
+    detection: exact
+  - type: github_release
+    repo: example/example-openapi
+  - type: page
+    url: https://changelog.example.com
+    detection: semantic
+    instructions: >
+      Alert on API version changes, deprecations, removals, newly required fields.
+      Ignore cosmetic and navigation changes.
+
+# Optional: healing configuration (how autoshim should patch code for this vendor)
+heal:
+  languages: [javascript, typescript, python]
+  notes: >
+    Example vendor uses API versioning. Changes often require updating the version parameter.
