@@ -1987,3 +1987,21 @@ describe("quality bars (spec §21)", () => {
 1. **Spec coverage:** discover→T4; packs→T3; add-vendor incl. registry-metadata prefill→T14; watch openapi/local→T7, github_release→T9, page/Context.dev→T10; understand/classify→T6+T8; fingerprint/dedupe/ignore→T2+T14; impact→T11; heal+caps→T12; publish templates/one-PR/branch→T13; CLI surface §8→T14+T15; error handling §9→T7/T9/T10/T15 tests; quality bars §21→T6 (github pair) + T16. Not covered anywhere (deliberate, spec §11): sitemap/extract targets, Go/Ruby healing, hosted anything. The `.autoshim/config.yaml` `schedule` field is written but only informational, matching the spec.
 2. **Placeholders:** QB2 body intentionally references the identical Task-15 test by content; executor copies it. Pack seed data for 4 packs is specified as field lists rather than full YAML — the stripe.yaml example plus field lists is complete instruction, not a TBD.
 3. **Type consistency check done:** `HealResult.whatChanged` (camel) vs agent JSON `what_changed` (wire) — `heal()` maps between them (T12 produces `HealResult`, T13 consumes `whatChanged`). `PollResult.skipped`, `SourceState.snapshot`, `fp8`, `branchName` names verified consistent across T7/T9/T10/T13/T15.
+
+---
+
+### Task 17: MCP server (added 2026-09-01 per strategy decision)
+
+**Files:**
+- Create: `packages/cli/src/mcp.ts`
+- Modify: `packages/cli/src/index.ts` (add `mcp` subcommand), `packages/cli/package.json` (dep `@modelcontextprotocol/sdk`)
+- Test: `packages/cli/test/mcp.test.ts`
+
+**Interfaces:**
+- Consumes: `cmdDiscover` (T14), `runWatch`, `runSimulate`, `runImpact`, `runHeal`, `PipelineDeps` (T15).
+- Produces: `autoshim mcp` — a stdio MCP server exposing five tools: `discover`, `watch_once` (arg: vendor?, always no-publish/dry-run), `impact` (arg: change_id), `heal_dry_run` (arg: change_id?), `list_changes`. Each returns the same JSON the CLI's `--json` mode prints. The server NEVER publishes (no PRs/issues over MCP in v1 — read-only analysis; healing returns the diff text).
+- Dep exception to the Global Constraints whitelist, ruled by controller: `@modelcontextprotocol/sdk` is allowed (official SDK, required for the channel).
+
+- [ ] **Step 1: Write the failing test** — `packages/cli/test/mcp.test.ts`: construct the server object via an exported `buildMcpServer(rootDir, deps)` factory (do not spawn stdio in tests); assert it registers exactly the five tools with the names above and that calling the `discover` tool handler on a fixture repo returns JSON containing `package_name` entries. Use the same fixture-repo helper pattern as `commands.test.ts`.
+- [ ] **Step 2: fail**, **Step 3: implement** with `@modelcontextprotocol/sdk` (McpServer + StdioServerTransport; `registerTool` per tool; `autoshim mcp` runs `await server.connect(new StdioServerTransport())`). Follow the SDK's current README for exact imports at execution time — do not guess from memory.
+- [ ] **Step 4: pass**, **Step 5: Commit** — `git add -A && git commit -m "feat(cli): mcp server exposing discover/watch/impact/heal tools"`
