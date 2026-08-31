@@ -1,6 +1,7 @@
-node_modules/
-dist/
 .autoshim/cache/
 .autoshim/changes/
-fixtures/specs/downloaded/
 .superpowers/
+**/node_modules/
+dist/
+fixtures/specs/downloaded/
+node_modules/
