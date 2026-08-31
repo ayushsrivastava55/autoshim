@@ -3,3 +3,4 @@ dist/
 .autoshim/cache/
 .autoshim/changes/
 fixtures/specs/downloaded/
+.superpowers/
