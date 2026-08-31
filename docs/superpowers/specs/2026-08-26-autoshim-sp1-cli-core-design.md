@@ -1,7 +1,7 @@
-# Unbreak — Sub-project 1: OSS CLI + core pipeline (DRAFT, awaiting approval)
+# Autoshim (autoshim.com) — Sub-project 1: OSS CLI + core pipeline (DRAFT, awaiting approval)
 
 Status: DRAFT — written after brainstorming against the PRD. Not yet approved.
-Source: PRD "Unbreak" (2026-08-26), reinterpreted; deviations are called out explicitly.
+Source: PRD "Autoshim" (2026-08-26), reinterpreted; deviations are called out explicitly.
 
 ## 0. Why this document exists
 
@@ -13,7 +13,7 @@ The PRD's own launch criterion (§20) is:
 
 That criterion is fully satisfiable by an OSS CLI with no hosted component.
 So this spec covers only sub-project 1. Everything in it is reused unchanged by
-the hosted product later because all logic lives in `@unbreak/core` behind
+the hosted product later because all logic lives in `@autoshim/core` behind
 three interfaces (`ChangeSource`, `RepoAccess`, `Publisher`); the CLI is just the
 first host.
 
@@ -21,7 +21,7 @@ first host.
 
 | Sub-project | Delivers | Depends on |
 |---|---|---|
-| **SP1 (this spec)** | `@unbreak/core` + `unbreak` CLI: discover, packs, add vendor, watch (openapi / github_release local; page via Context.dev), classify, impact, heal, draft PR / Issue | — |
+| **SP1 (this spec)** | `@autoshim/core` + `autoshim` CLI: discover, packs, add vendor, watch (openapi / github_release local; page via Context.dev), classify, impact, heal, draft PR / Issue | — |
 | SP2 | GitHub Action wrapper (scheduled `watch --once` with cached state), Context.dev `extract`/sitemap targets, 20 packs | SP1 |
 | SP3 | Hosted API + worker + GitHub App, webhooks (`/webhooks/context`, `/webhooks/github`), multi-repo fanout, slash commands | SP1 |
 | SP4 | Dashboard, email/Slack notifications, pricing | SP3 |
@@ -31,7 +31,7 @@ first host.
 1. **Context.dev is the web-change layer, including in the CLI.** Per PRD §16
    the CLI uses the user's `CONTEXT_API_KEY`. SP1 ships a Context.dev adapter
    for `page` targets. `openapi` and `github_release` targets are polled locally
-   (PRD §9 says releases are "Unbreak poller, not Context.dev"; raw spec files
+   (PRD §9 says releases are "Autoshim poller, not Context.dev"; raw spec files
    need only a hash compare). With no key, page targets report
    `needs CONTEXT_API_KEY`; spec/release targets work keyless.
    *Flip:* if Context.dev should be optional in the CLI, I'll add a local
@@ -49,8 +49,8 @@ first host.
    monitors (create/list/delete), `web-extract` with a JSON schema, and the
    webhook contract (`X-Context-Signature` HMAC, ≤300s skew, dedupe on ids).
 6. **Stack:** TypeScript, pnpm workspaces, Node ≥ 20, vitest. No DB in SP1 —
-   state is files under `.unbreak/`.
-7. **Distribution:** `npx unbreak`, Apache-2.0. Packs live in the same repo.
+   state is files under `.autoshim/`.
+7. **Distribution:** `npx autoshim`, Apache-2.0. Packs live in the same repo.
 
 ## 2. Approaches considered
 
@@ -58,7 +58,7 @@ first host.
   CLI as thin client. *Rejected:* infra before signal; can't demo for ~2 weeks;
   the PRD's launch bar doesn't need it.
 - **B. Core-first, CLI as first host (chosen).** All pipeline logic as pure
-  functions in `@unbreak/core` over three small interfaces. CLI wires them to
+  functions in `@autoshim/core` over three small interfaces. CLI wires them to
   the local filesystem + git + Octokit. Hosted later wires the same core to
   Postgres + GitHub App. Demoable in days; every stage unit-testable with
   fixtures.
@@ -69,7 +69,7 @@ first host.
 
 ```
 packages/
-  core/          @unbreak/core — no I/O except through injected interfaces
+  core/          @autoshim/core — no I/O except through injected interfaces
     types/       VendorChange, SpecDiff, ImpactReport, Pack, Watch, ... (PRD §6, §10–12 verbatim)
     packs/       YAML loader + registry (package name → pack id, import patterns)
     discover/    manifest parsers → DetectedIntegration[]
@@ -80,7 +80,7 @@ packages/
     impact/      file index + scorer → ImpactReport
     heal/        agent pass (Claude) → FileEdit[] with safety caps
     publish/     PR / Issue body templates; Publisher interface
-  cli/           unbreak — commander; .unbreak/ state; git ops; Octokit publisher
+  cli/           autoshim — commander; .autoshim/ state; git ops; Octokit publisher
 packs/           *.yaml + *.extract.json (bundled into cli at build)
 fixtures/        sample specs (incl. github REST spec pair), sample repos (js, py)
 ```
@@ -99,14 +99,14 @@ interface RepoAccess {            // CLI: local fs; hosted: GitHub contents API 
 interface Publisher {             // CLI: git + Octokit; hosted: GitHub App installation token
   openDraftPr(input: PrInput): Promise<{ url: string }>
   updateDraftPr(id, input): Promise<void>
-  findOpenUnbreakPr(vendorId): Promise<{ id; branch } | null>
+  findOpenAutoshimPr(vendorId): Promise<{ id; branch } | null>
   openIssue(input: IssueInput): Promise<{ url: string }>
 }
 ```
 
 ## 4. State model (CLI)
 
-`.unbreak/config.yaml` — committed. Vendors + watches for this repo.
+`.autoshim/config.yaml` — committed. Vendors + watches for this repo.
 ```yaml
 version: 1
 project:
@@ -128,21 +128,21 @@ ignores:
   - entity: "charges.source"
 ```
 
-`.unbreak/cache/` — gitignored. Per-target `SourceState` (spec hash + last
+`.autoshim/cache/` — gitignored. Per-target `SourceState` (spec hash + last
 snapshot for diffing, last release tag, Context.dev monitor id + last change id)
-and the repo file index. `.unbreak/changes/` — gitignored, one JSON per
+and the repo file index. `.autoshim/changes/` — gitignored, one JSON per
 `VendorChange` seen (audit trail; hosted moves this to Postgres).
 
 ## 5. Pipeline stages
 
-**Discover** (`unbreak discover`): parse `package.json` + lockfiles
+**Discover** (`autoshim discover`): parse `package.json` + lockfiles
 (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`), `requirements.txt`,
 `pyproject.toml`, `poetry.lock`, `Pipfile.lock`, `go.mod`, `Gemfile.lock`.
 Map names → pack ids via registry. Unknown packages become
 `DetectedIntegration{vendor_id: null}`; best-effort homepage/docs/repo lookup
-from npm/PyPI registry metadata so `unbreak add` can be one confirmation.
+from npm/PyPI registry metadata so `autoshim add` can be one confirmation.
 
-**Add vendor** (`unbreak add --openapi <url> | --changelog <url> | --docs <url> | --repo o/n | --package npm:x`):
+**Add vendor** (`autoshim add --openapi <url> | --changelog <url> | --docs <url> | --repo o/n | --package npm:x`):
 resolve a Vendor (pack if the input matches one; else `custom_<slug>`), derive
 targets (OpenAPI → exact local poll; GitHub repo → release poll; changelog/docs
 → Context.dev page monitor, semantic), write config, create Context.dev
@@ -150,8 +150,8 @@ monitors idempotently (keyed on url in cache), run an initial poll to seed
 state. `--test` prints what would be watched and the last 3 releases /
 extracted items without persisting.
 
-**Watch** (`unbreak watch --once`): for each active target, `ChangeSource.poll`.
-Emits `VendorChange[]`, writes each to `.unbreak/changes/`, dedupes by
+**Watch** (`autoshim watch --once`): for each active target, `ChangeSource.poll`.
+Emits `VendorChange[]`, writes each to `.autoshim/changes/`, dedupes by
 `fingerprint`, drops ignored ones. Then runs impact + heal for each change
 unless `--no-heal`.
 
@@ -166,14 +166,14 @@ unless `--no-heal`.
   schema or the generic schema → same path as release notes.
 - `fingerprint = sha256(vendor_id + sorted entity names + classification + normalized title)`.
 
-**Impact** (`unbreak impact <change-id>` / automatic): build or load the file
+**Impact** (`autoshim impact <change-id>` / automatic): build or load the file
 index (imports of known packages, string literals matching `/v\d+/...` or
 vendor hostnames, client constructors from pack `import_patterns`); search for
 change entities, spec-diff paths, package ids; score per PRD §12.2;
 `patchable` per §12.3. Skip dirs per PRD. Index invalidated when
 `git rev-parse HEAD` changes.
 
-**Heal** (`unbreak heal [--dry-run]`): if `patchable` and classification ∈
+**Heal** (`autoshim heal [--dry-run]`): if `patchable` and classification ∈
 {breaking, deprecation} (additive → no PR; PRD §23), run the agent with:
 VendorChange, SpecDiff, contents of hit files only, pack `heal.notes`. Output
 contract: a JSON list of `{path, newContent}` limited to hit files (+1 for an
@@ -181,11 +181,11 @@ import fix), plus a PR-body "What I changed" list and TODO markers where unsure.
 Safety caps: ≤20 files, ≤400 diff lines, no new deps, no lockfile edits → else
 fall back to Issue. Rules from PRD §13.2 go in the system prompt verbatim.
 
-**Publish**: branch `unbreak/<vendor>/<fingerprint8>`. One open Unbreak PR per
+**Publish**: branch `autoshim/<vendor>/<fingerprint8>`. One open Autoshim PR per
 (repo, vendor): if one exists, push a new commit to its branch and update the
 body with a "Superseded change" section rather than open a second PR. Two
 different vendors on the same day → two branches, two PRs (quality bar #5).
-No hits but breaking/deprecation → Issue `[unbreak] <Vendor> <title>` with
+No hits but breaking/deprecation → Issue `[autoshim] <Vendor> <title>` with
 excerpt + URLs. Draft PR title/body/labels exactly per PRD §13.2. `--dry-run`
 prints the unified diff and the PR body and touches nothing.
 
@@ -221,14 +221,14 @@ registry. Seed packs: stripe, github, openai, shopify, slack.
 ## 8. CLI surface (SP1)
 
 ```
-unbreak init                       # detect languages, write .unbreak/config.yaml, run discover, offer to add pack vendors
-unbreak discover [--json]
-unbreak add --openapi <url> | --changelog <url> | --docs <url> | --repo <o/n> | --package <eco:name> [--name X] [--test]
-unbreak watch --once [--no-heal] [--vendor id]
-unbreak simulate --vendor id --openapi <path-or-url>   # inject a new spec version (demo + tests)
-unbreak impact <change-id>
-unbreak heal [<change-id>] [--dry-run]
-unbreak ignore --fingerprint <fp> | --entity <name>
+autoshim init                       # detect languages, write .autoshim/config.yaml, run discover, offer to add pack vendors
+autoshim discover [--json]
+autoshim add --openapi <url> | --changelog <url> | --docs <url> | --repo <o/n> | --package <eco:name> [--name X] [--test]
+autoshim watch --once [--no-heal] [--vendor id]
+autoshim simulate --vendor id --openapi <path-or-url>   # inject a new spec version (demo + tests)
+autoshim impact <change-id>
+autoshim heal [<change-id>] [--dry-run]
+autoshim ignore --fingerprint <fp> | --entity <name>
 ```
 Env: `GITHUB_TOKEN` (publish), `ANTHROPIC_API_KEY` (extract + heal),
 `CONTEXT_API_KEY` (page targets). Every command works in `--dry-run`/read-only
@@ -261,6 +261,6 @@ form without any key so the pipeline can be inspected before spending money.
 ## 11. Explicitly out of scope for SP1
 
 Hosted API, worker queues, GitHub App, webhooks, dashboard, notifications,
-slash commands (`/unbreak ignore` on PRs), multi-repo fanout, pricing, Go/Ruby
+slash commands (`/autoshim ignore` on PRs), multi-repo fanout, pricing, Go/Ruby
 healing, deterministic healer strategies 1–2, sitemap/extract Context.dev
 targets, the remaining 15 packs.
