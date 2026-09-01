@@ -1,0 +1,15 @@
+[[package]]
+name = "requests"
+version = "2.32.3"
+description = "Python HTTP for Humans."
+category = "main"
+optional = false
+python-versions = ">=3.8"
+
+[[package]]
+name = "stripe"
+version = "9.0.0"
+description = "Python bindings for the Stripe API"
+category = "main"
+optional = false
+python-versions = ">=3.7"

@@ -62,6 +62,11 @@ function parseRequirementsTxt(content: string): DetectedIntegration[] {
       continue;
     }
 
+    // Skip directive lines (-r, -e, --)
+    if (trimmed.startsWith("-r ") || trimmed.startsWith("-e ") || trimmed.startsWith("--")) {
+      continue;
+    }
+
     // Strip everything after semicolon (markers)
     const withoutMarkers = trimmed.split(";")[0].trim();
 
@@ -140,6 +145,11 @@ function parseGoMod(content: string): DetectedIntegration[] {
   for (const line of lines) {
     const trimmed = line.trim();
 
+    // Skip comment lines
+    if (trimmed.startsWith("//")) {
+      continue;
+    }
+
     // Detect require block
     if (trimmed === "require (") {
       inRequire = true;
@@ -152,8 +162,10 @@ function parseGoMod(content: string): DetectedIntegration[] {
         continue;
       }
 
-      // Extract module name (first token)
-      const tokens = trimmed.split(/\s+/);
+      // Extract module name (first token), skip comments
+      const commentIndex = trimmed.indexOf("//");
+      const withoutComment = commentIndex >= 0 ? trimmed.slice(0, commentIndex) : trimmed;
+      const tokens = withoutComment.trim().split(/\s+/);
       if (tokens[0]) {
         names.push(tokens[0]);
       }
@@ -218,14 +230,11 @@ function parsePackageLockJson(content: string): DetectedIntegration[] {
 
     // Extract package names from node_modules paths
     for (const key of Object.keys(packages)) {
-      // Key format: "node_modules/<name>" or "node_modules/<scope>/<name>"
+      // Key format: "node_modules/<name>", "node_modules/<scope>/<name>", or "node_modules/.../<name>"
       if (key.startsWith("node_modules/")) {
         const pkgPath = key.slice("node_modules/".length);
-        // Get the actual package name (last component of path)
-        const name = pkgPath.split("/").pop();
-        if (name) {
-          names.push(name);
-        }
+        // Keep the full package name including scopes (e.g., "@stripe/stripe-js")
+        names.push(pkgPath);
       }
     }
 
@@ -242,24 +251,33 @@ function parsePackageLockJson(content: string): DetectedIntegration[] {
 }
 
 function parsePnpmLockYaml(content: string): DetectedIntegration[] {
-  // Simple YAML parser for pnpm-lock.yaml
-  // We're only extracting keys from top-level dependencies and devDependencies
+  // Parse pnpm-lock.yaml v6+ format with importers/specifier nesting
+  // Support top-level dependencies and packages sections
   const names: string[] = [];
   const lines = content.split("\n");
 
   let inDependencies = false;
   let inDevDependencies = false;
+  let inPackages = false;
 
   for (const line of lines) {
-    // Check for dependencies section
+    // Check for section headers (no leading spaces)
     if (line.startsWith("dependencies:")) {
       inDependencies = true;
       inDevDependencies = false;
+      inPackages = false;
       continue;
     }
     if (line.startsWith("devDependencies:")) {
       inDevDependencies = true;
       inDependencies = false;
+      inPackages = false;
+      continue;
+    }
+    if (line.startsWith("packages:")) {
+      inPackages = true;
+      inDependencies = false;
+      inDevDependencies = false;
       continue;
     }
 
@@ -267,14 +285,27 @@ function parsePnpmLockYaml(content: string): DetectedIntegration[] {
     if (line && !line.startsWith(" ") && line.match(/^[a-zA-Z]/)) {
       inDependencies = false;
       inDevDependencies = false;
+      inPackages = false;
       continue;
     }
 
-    // Parse entries: "  package_name:" format
+    // For dependencies/devDependencies: match "  package_name:" with exactly 2 spaces
+    // Exclude nested keys (4+ spaces) using /^  ([^\s:][^:]*):/
     if ((inDependencies || inDevDependencies) && line.startsWith("  ")) {
-      const match = line.match(/^  ([^:]+):/);
+      const match = line.match(/^  ([^\s:][^:]*):/);
       if (match) {
-        const pkgName = match[1].trim();
+        const pkgName = match[1];
+        if (pkgName && !pkgName.startsWith("#")) {
+          names.push(pkgName);
+        }
+      }
+    }
+
+    // For packages: match "  /<name>" or "  @scope/name" format
+    if (inPackages && line.startsWith("  ")) {
+      const match = line.match(/^  (\/?((?:@[^\/]+\/)?[^:@\s]+)):/);
+      if (match) {
+        const pkgName = match[1];
         if (pkgName && !pkgName.startsWith("#")) {
           names.push(pkgName);
         }
@@ -292,9 +323,9 @@ function parsePnpmLockYaml(content: string): DetectedIntegration[] {
 }
 
 function parseYarnLock(content: string): DetectedIntegration[] {
-  // Yarn lock files use a key-based format
-  // We extract keys that represent package names
-  const names: string[] = [];
+  // Yarn lock files use a key-based format with quoted and unquoted keys
+  // Support @scope/name format and quoted keys like "@babel/core@^7":
+  const names = new Set<string>();
   const lines = content.split("\n");
 
   for (const line of lines) {
@@ -303,18 +334,18 @@ function parseYarnLock(content: string): DetectedIntegration[] {
       continue;
     }
 
-    // Parse entries like "package@version:"
-    const match = line.match(/^([^@]+)@/);
+    // Parse entries: handle quoted keys and scoped packages
+    // Matches: package@version:, "package@version":, @scope/package@version:, "@scope/package@version":
+    const match = line.match(/^"?((?:@[^\/]+\/)?[^@"]+)@/);
     if (match) {
       const name = match[1].trim();
-      // Avoid duplicates
-      if (!names.includes(name)) {
-        names.push(name);
+      if (name) {
+        names.add(name);
       }
     }
   }
 
-  return names.map((name) => ({
+  return Array.from(names).map((name) => ({
     vendor_id: null,
     ecosystem: "npm",
     package_name: name,
@@ -328,12 +359,13 @@ function parsePoetryLock(content: string): DetectedIntegration[] {
   const names: string[] = [];
   const lines = content.split("\n");
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     // Look for [[package]] headers
     if (line.startsWith("[[package]]")) {
       // Next meaningful line should be name = "..."
-      for (let i = lines.indexOf(line) + 1; i < lines.length; i++) {
-        const nextLine = lines[i].trim();
+      for (let j = i + 1; j < lines.length; j++) {
+        const nextLine = lines[j].trim();
         if (nextLine.startsWith("name = ")) {
           const match = nextLine.match(/name = "([^"]+)"/);
           if (match) {

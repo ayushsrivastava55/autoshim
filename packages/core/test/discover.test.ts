@@ -42,6 +42,32 @@ describe("parseManifest", () => {
     expect(out.map((d) => d.package_name)).toEqual(["stripe", "rake"]);
     expect(out[0].confidence).toBe(0.6);
   });
+  it("package-lock.json with scoped packages", () => {
+    const names = parseManifest("package-lock.json", fx("js/package-lock.json")).map((d) => d.package_name);
+    expect(names).toContain("lodash");
+    expect(names).toContain("@stripe/stripe-js");
+    expect(names).toContain("@babel/core");
+  });
+  it("pnpm-lock.yaml v6+ format with specifier/version nesting", () => {
+    const names = parseManifest("pnpm-lock.yaml", fx("js/pnpm-lock.yaml")).map((d) => d.package_name);
+    expect(names).toContain("react");
+    expect(names).toContain("vue");
+    expect(names).toContain("typescript");
+    expect(names).not.toContain("specifier");
+    expect(names).not.toContain("version");
+  });
+  it("yarn.lock with scoped and quoted keys", () => {
+    const names = parseManifest("yarn.lock", fx("js/yarn.lock")).map((d) => d.package_name);
+    expect(names).toContain("@babel/core");
+    expect(names).toContain("@stripe/stripe-js");
+    expect(names).toContain("lodash");
+    expect(names).toContain("react");
+  });
+  it("poetry.lock extracts all package sections", () => {
+    const names = parseManifest("poetry.lock", fx("py/poetry.lock")).map((d) => d.package_name);
+    expect(names).toEqual(["requests", "stripe"]);
+    expect(names.length).toBe(2);
+  });
 });
 
 describe("discover", () => {

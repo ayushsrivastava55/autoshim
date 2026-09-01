@@ -1,0 +1,22 @@
+lockfileVersion: '6.0'
+dependencies:
+  react:
+    specifier: ^18.0.0
+    version: 18.2.0
+  vue:
+    specifier: ^3.0.0
+    version: 3.3.4
+devDependencies:
+  typescript:
+    specifier: ^5.0.0
+    version: 5.1.6
+packages:
+  /react@18.2.0:
+    resolution: {integrity: sha512-abc}
+    version: 18.2.0
+  /vue@3.3.4:
+    resolution: {integrity: sha512-def}
+    version: 3.3.4
+  /typescript@5.1.6:
+    resolution: {integrity: sha512-ghi}
+    version: 5.1.6
