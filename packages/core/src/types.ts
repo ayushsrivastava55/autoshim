@@ -2,7 +2,12 @@ export type Classification = "breaking" | "deprecation" | "additive" | "docs_onl
 export type ChangeSourceKind = "changelog" | "docs" | "sitemap" | "openapi" | "github_release";
 export type SpecChangeKind = "added_required" | "removed" | "renamed" | "type_change" | "enum_removed";
 
-export interface OperationChange { field: string; from?: string; to?: string; kind: SpecChangeKind }
+// `rule` is an additive field (Task 6 amendment): a stable kebab-case id naming the specific
+// direction-aware check that produced this change (e.g. "request-property-removed",
+// "response-property-added-required"). It does not rename or remove anything above.
+// Optional per the amendment's own wording on the type contract; every change diff.ts
+// actually emits always sets it — classify.ts treats a missing rule as non-breaking.
+export interface OperationChange { field: string; from?: string; to?: string; kind: SpecChangeKind; rule?: string }
 export interface ChangedOperation { method: string; path: string; changes: OperationChange[] }
 export interface SpecDiff { addedPaths: string[]; removedPaths: string[]; changedOperations: ChangedOperation[] }
 

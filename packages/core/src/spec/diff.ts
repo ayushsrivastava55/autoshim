@@ -1,0 +1,635 @@
+import type { NormalizedSpec } from "./load.js";
+import { resolveRef, flattenAllOf, normalizeNullable } from "./load.js";
+import type { ChangeEntity, ChangedOperation, OperationChange, SpecChangeKind, SpecDiff } from "../types.js";
+export { classifyDiff } from "./classify.js";
+
+export interface DiffResult {
+  specDiff: SpecDiff;
+  deprecatedOps: { method: string; path: string }[]; // deprecated:true flips (false/absent -> true)
+  addedOperations: { method: string; path: string }[];
+  securityChanged: boolean;
+}
+
+type Direction = "request" | "response";
+type Subject = "parameter" | "property";
+
+/**
+ * Diffs two normalized OpenAPI specs into a structural tree (SpecDiff) plus the
+ * flags classify.ts needs.
+ *
+ * AMENDMENT (overrides the brief's original step 2 "rename detection"): v1 does NOT
+ * attempt rename detection. A path present only in `a` and a similarly-shaped path
+ * present only in `b` are reported as a plain removal + a plain addition — never
+ * fused into a single "renamed" change. `SpecChangeKind` keeps the "renamed" member
+ * (types.ts is frozen against renames per the plan), but this module never emits it.
+ *
+ * Two-layer design: this function is the *structural* pass (what changed, and where).
+ * classify.ts is the separate *interpretation* pass (is it breaking). Each individual
+ * check below is a small pure function keyed by a stable rule id (see `ruleFor`), so
+ * severity lives in one data table (classify.ts) instead of scattered conditionals.
+ */
+export function diffSpecs(a: NormalizedSpec, b: NormalizedSpec): DiffResult {
+  const removedPaths: string[] = [];
+  const addedPaths: string[] = [];
+  const changedOperations: ChangedOperation[] = [];
+  const deprecatedOps: { method: string; path: string }[] = [];
+  const addedOperations: { method: string; path: string }[] = [];
+
+  const pathsA = a.paths;
+  const pathsB = b.paths;
+  const pathKeysA = Object.keys(pathsA);
+  const pathKeysB = Object.keys(pathsB);
+  const keysBSet = new Set(pathKeysB);
+  const keysASet = new Set(pathKeysA);
+
+  // Step 1 (algorithm) / step 2 removed by amendment: no rename pairing.
+  const removedPathKeys = pathKeysA.filter((p) => !keysBSet.has(p));
+  const addedPathKeys = pathKeysB.filter((p) => !keysASet.has(p));
+
+  // Rule-tagged mirror of a removed operation. removedPaths (the string-list contract)
+  // is unchanged by this; this just also makes the removal visible to anyone reading
+  // changedOperations, and gives classify.ts's rule table a real producer for
+  // "operation-removed" instead of a name nothing ever emits.
+  const pushRemoved = (method: string, path: string) => {
+    removedPaths.push(`${method.toUpperCase()} ${path}`);
+    changedOperations.push({ method, path, changes: [{ field: "", kind: "removed", rule: "operation-removed" }] });
+  };
+
+  for (const p of removedPathKeys) {
+    for (const method of Object.keys(pathsA[p])) {
+      pushRemoved(method, p);
+    }
+  }
+  for (const p of addedPathKeys) {
+    for (const method of Object.keys(pathsB[p])) {
+      addedPaths.push(`${method.toUpperCase()} ${p}`);
+      addedOperations.push({ method, path: p });
+    }
+  }
+
+  // Schema-pair memo, keyed by (direction, refA, refB) — see diffSchemaRel. Shared
+  // across every operation so repeated $ref pairs (e.g. the same shared response
+  // envelope on 50 endpoints) are compared once.
+  const memo = new Map<string, OperationChange[]>();
+
+  const commonPaths = pathKeysA.filter((p) => keysBSet.has(p));
+  for (const p of commonPaths) {
+    const methodsA = pathsA[p];
+    const methodsB = pathsB[p];
+    const methodsASet = new Set(Object.keys(methodsA));
+    const methodsBSet = new Set(Object.keys(methodsB));
+
+    for (const method of methodsASet) {
+      if (!methodsBSet.has(method)) {
+        pushRemoved(method, p);
+      }
+    }
+    for (const method of methodsBSet) {
+      if (!methodsASet.has(method)) {
+        addedPaths.push(`${method.toUpperCase()} ${p}`);
+        addedOperations.push({ method, path: p });
+      }
+    }
+
+    for (const method of methodsASet) {
+      if (!methodsBSet.has(method)) continue;
+      const opA = methodsA[method] as Record<string, unknown> | undefined;
+      const opB = methodsB[method] as Record<string, unknown> | undefined;
+      if (opA === undefined || opB === undefined) continue;
+
+      // Fast path: identical operations, skip all recursion (rule 7 in CLAUDE.md).
+      if (JSON.stringify(opA) === JSON.stringify(opB)) continue;
+
+      const changes: OperationChange[] = [];
+
+      // deprecated: falsy -> true flip only (true -> true is not a change).
+      const depA = opA.deprecated === true;
+      const depB = opB.deprecated === true;
+      if (!depA && depB) {
+        deprecatedOps.push({ method, path: p });
+        changes.push({ field: "deprecated", kind: "type_change", from: "false", to: "true", rule: "operation-deprecated" });
+      }
+
+      diffParameters(opA, opB, changes);
+      diffRequestBody(opA, opB, a.raw, b.raw, memo, changes);
+      diffResponses(opA, opB, a.raw, b.raw, memo, changes);
+
+      if (changes.length > 0) {
+        changedOperations.push({ method, path: p, changes });
+      }
+    }
+  }
+
+  // Step 5: components pass, attributed to every referencing operation by direction.
+  const componentChanges = diffComponents(a, b, memo);
+  for (const [key, changes] of componentChanges) {
+    if (changes.length === 0) continue;
+    const [method, path] = key === "" ? ["", ""] : key.split(" ", 2);
+    const existing = changedOperations.find((o) => o.method === method && o.path === path);
+    if (existing) {
+      existing.changes.push(...changes);
+    } else {
+      changedOperations.push({ method, path, changes });
+    }
+  }
+
+  const securityChanged = JSON.stringify(a.securitySchemes) !== JSON.stringify(b.securitySchemes);
+  if (securityChanged) {
+    changedOperations.push({
+      method: "",
+      path: "#security",
+      changes: [{ field: "security", kind: "removed", rule: "security-scheme-changed" }],
+    });
+  }
+
+  return {
+    specDiff: { addedPaths, removedPaths, changedOperations },
+    deprecatedOps,
+    addedOperations,
+    securityChanged,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Rule ids: a stable, kebab-case name for each (kind, direction, subject) triple.
+// classify.ts looks these up in a data table instead of branching on kind here.
+// ---------------------------------------------------------------------------
+function ruleFor(kind: SpecChangeKind, direction: Direction, subject: Subject): string {
+  switch (kind) {
+    case "removed":
+      return `${direction}-${subject}-removed`;
+    case "added_required":
+      return `${direction}-${subject}-added-required`;
+    case "type_change":
+      return `${direction}-${subject}-type-changed`;
+    case "enum_removed":
+      return subject === "parameter" ? `${direction}-parameter-enum-value-removed` : `${direction}-enum-value-removed`;
+    case "renamed":
+      // Never emitted (amendment removes rename detection); kept for exhaustiveness.
+      return "renamed";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parameters (always request-direction: OpenAPI has no response-parameter concept).
+// ---------------------------------------------------------------------------
+function diffParameters(opA: Record<string, unknown>, opB: Record<string, unknown>, out: OperationChange[]): void {
+  const paramsA = asParamList(opA.parameters);
+  const paramsB = asParamList(opB.parameters);
+  const keyOf = (p: Record<string, unknown>) => `${String(p.name)} ${String(p.in)}`;
+  const mapA = new Map(paramsA.map((p) => [keyOf(p), p]));
+  const mapB = new Map(paramsB.map((p) => [keyOf(p), p]));
+
+  for (const [key, pa] of mapA) {
+    const name = String(pa.name);
+    if (!mapB.has(key)) {
+      out.push({ field: name, kind: "removed", rule: ruleFor("removed", "request", "parameter") });
+      continue;
+    }
+    const pb = mapB.get(key)!;
+    const typeA = paramType(pa);
+    const typeB = paramType(pb);
+    if (typeA !== undefined && typeB !== undefined && typeA !== typeB) {
+      out.push({ field: name, kind: "type_change", from: typeA, to: typeB, rule: ruleFor("type_change", "request", "parameter") });
+    }
+    const enumA = paramEnum(pa);
+    if (enumA) {
+      const enumB = new Set((paramEnum(pb) ?? []).map(String));
+      const missing = enumA.map(String).filter((v) => !enumB.has(v));
+      if (missing.length > 0) {
+        out.push({ field: name, kind: "enum_removed", from: missing.join(","), rule: ruleFor("enum_removed", "request", "parameter") });
+      }
+    }
+  }
+  for (const [key, pb] of mapB) {
+    if (mapA.has(key)) continue;
+    if (pb.required === true) {
+      out.push({ field: String(pb.name), kind: "added_required", rule: ruleFor("added_required", "request", "parameter") });
+    }
+  }
+}
+
+function asParamList(v: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((p): p is Record<string, unknown> => typeof p === "object" && p !== null && "name" in p && "in" in p);
+}
+function paramSchema(p: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (typeof p.schema === "object" && p.schema !== null) return p.schema as Record<string, unknown>;
+  return p; // Swagger 2.0 inlines type/enum directly on the parameter object.
+}
+function paramType(p: Record<string, unknown>): string | undefined {
+  const s = paramSchema(p);
+  return s && typeof s.type === "string" ? s.type : undefined;
+}
+function paramEnum(p: Record<string, unknown>): unknown[] | undefined {
+  const s = paramSchema(p);
+  return s && Array.isArray(s.enum) ? (s.enum as unknown[]) : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// requestBody / responses[2xx]
+// ---------------------------------------------------------------------------
+function diffRequestBody(
+  opA: Record<string, unknown>,
+  opB: Record<string, unknown>,
+  rawA: unknown,
+  rawB: unknown,
+  memo: Map<string, OperationChange[]>,
+  out: OperationChange[]
+): void {
+  const sa = firstJsonSchema(opA.requestBody);
+  const sb = firstJsonSchema(opB.requestBody);
+  if (sa === undefined || sb === undefined) return;
+  out.push(...diffSchema(sa, sb, "", "request", rawA, rawB, memo));
+}
+
+/**
+ * v1 scope limit (deliberate, not an oversight): only 2xx (success) responses are
+ * inspected. 4xx/5xx error-response schemas are not diffed at all — a change
+ * confined to e.g. a 404 body never reaches classify.ts's rule table and therefore
+ * classifies as docs_only/additive regardless of how it looks structurally. Error
+ * shapes are typically consumed defensively (status-code branching, not payload
+ * parsing), and modeling real consumer reliance on them is out of v1's scope; see
+ * the "removal confined to a 404 response is not breaking" test.
+ */
+function diffResponses(
+  opA: Record<string, unknown>,
+  opB: Record<string, unknown>,
+  rawA: unknown,
+  rawB: unknown,
+  memo: Map<string, OperationChange[]>,
+  out: OperationChange[]
+): void {
+  const responsesA = asRecord(opA.responses);
+  const responsesB = asRecord(opB.responses);
+  if (!responsesA || !responsesB) return;
+
+  for (const code of Object.keys(responsesA)) {
+    if (!/^2/.test(code)) continue;
+    if (!(code in responsesB)) {
+      // "success status removed" (docs/references/oasdiff-taxonomy.md, PATHS/OPERATIONS ERR list).
+      out.push({ field: `status:${code}`, kind: "removed", rule: "response-status-removed" });
+      continue;
+    }
+    const sa = firstJsonSchema(responsesA[code]);
+    const sb = firstJsonSchema(responsesB[code]);
+    if (sa !== undefined && sb === undefined) {
+      // The 2xx status survives but its schema/content disappeared entirely — the
+      // consumer's parser for that status now has nothing to parse against.
+      out.push({ field: `status:${code}`, kind: "removed", rule: "response-media-type-removed" });
+      continue;
+    }
+    if (sa === undefined || sb === undefined) continue;
+    out.push(...diffSchema(sa, sb, "", "response", rawA, rawB, memo));
+  }
+}
+
+function firstJsonSchema(bodyOrResponse: unknown): unknown {
+  const obj = asRecord(bodyOrResponse);
+  if (!obj) return undefined;
+  const content = asRecord(obj.content);
+  if (!content) return undefined;
+  const json = asRecord(content["application/json"]);
+  if (json && "schema" in json) return json.schema;
+  // Fall back to the first media type present, for specs that don't use application/json.
+  for (const media of Object.values(content)) {
+    const m = asRecord(media);
+    if (m && "schema" in m) return m.schema;
+  }
+  return undefined;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Schema diffing: recursive, direction-aware, readOnly/writeOnly-guarded.
+//
+// Grounding for the readOnly/writeOnly guard and "negotiated-field polarity"
+// (OpenAPI 3.0.3 Schema Object, readOnly/writeOnly fixed fields,
+// https://spec.openapis.org/oas/v3.0.3#schema-object — verified against the raw spec
+// source, section "Fixed Fields" under Schema Object):
+//   readOnly: "...it MAY be sent as part of a response but SHOULD NOT be sent as
+//   part of the request. If the property is marked as readOnly being true and is in
+//   the required list, the required will take effect on the response only."
+//   writeOnly is the mirror image (request only).
+// A readOnly property can never appear in a request body, so any change observed
+// while walking in the "request" direction is moot for the request contract (and
+// vice versa for writeOnly in the "response" direction) — those changes are simply
+// not real to that direction and are skipped rather than misclassified.
+// ---------------------------------------------------------------------------
+function diffSchema(
+  sa: unknown,
+  sb: unknown,
+  prefix: string,
+  direction: Direction,
+  rawA: unknown,
+  rawB: unknown,
+  memo: Map<string, OperationChange[]>
+): OperationChange[] {
+  const rel = diffSchemaRel(sa, sb, direction, rawA, rawB, 8, new Set(), memo);
+  return rel.map((c) => ({ ...c, field: joinField(prefix, c.field) }));
+}
+
+function joinField(prefix: string, rel: string): string {
+  if (!prefix) return rel;
+  const base = prefix.endsWith(".") ? prefix.slice(0, -1) : prefix;
+  return rel ? `${base}.${rel}` : base;
+}
+
+function guardSkips(direction: Direction, readOnly: boolean, writeOnly: boolean): boolean {
+  return (direction === "request" && readOnly) || (direction === "response" && writeOnly);
+}
+
+function propPolarity(propA: unknown, propB: unknown): { readOnly: boolean; writeOnly: boolean } {
+  const flag = (o: unknown, key: string) => typeof o === "object" && o !== null && (o as Record<string, unknown>)[key] === true;
+  return {
+    readOnly: flag(propA, "readOnly") || flag(propB, "readOnly"),
+    writeOnly: flag(propA, "writeOnly") || flag(propB, "writeOnly"),
+  };
+}
+
+function ownType(o: Record<string, unknown>): string | undefined {
+  return typeof o.type === "string" ? o.type : undefined;
+}
+
+/**
+ * Compares two schema nodes and returns changes with *relative* field names
+ * ("" = this node itself, "tag" = a direct property, "child.tag" = nested).
+ * Callers (diffSchema) prepend the real prefix.
+ *
+ * $ref handling: equal ref strings stop immediately (left to the components pass);
+ * differing refs are resolved once each and recursed into, using `visited` (keyed
+ * by direction+refA+refB) to break cycles — a pair already on the current recursion
+ * path returns no changes instead of looping forever. `memo` caches the result of a
+ * given (direction, refA, refB) triple across the whole diff run (not just one
+ * operation), since the same shared schemas recur across many operations.
+ */
+function diffSchemaRel(
+  saIn: unknown,
+  sbIn: unknown,
+  direction: Direction,
+  rawA: unknown,
+  rawB: unknown,
+  depth: number,
+  visited: Set<string>,
+  memo: Map<string, OperationChange[]>
+): OperationChange[] {
+  if (depth <= 0) return [];
+
+  // "at the boundary": normalize 3.1 nullable-arrays and flatten allOf per node,
+  // before any structural comparison happens on this node.
+  const sa = flattenAllOf(normalizeNullable(saIn), rawA);
+  const sb = flattenAllOf(normalizeNullable(sbIn), rawB);
+
+  if (typeof sa !== "object" || sa === null || Array.isArray(sa)) return [];
+  if (typeof sb !== "object" || sb === null || Array.isArray(sb)) return [];
+  const saObj = sa as Record<string, unknown>;
+  const sbObj = sb as Record<string, unknown>;
+
+  // Fast path (rule 7): identical nodes never need structural recursion.
+  if (JSON.stringify(saObj) === JSON.stringify(sbObj)) return [];
+
+  // Circular markers from flattenAllOf's own cycle guard: stop at the boundary,
+  // comparing only by ref identity (the cycle itself was already walked once).
+  if (saObj["x-autoshim-circular"] === true || sbObj["x-autoshim-circular"] === true) {
+    return [];
+  }
+
+  const refA = typeof saObj.$ref === "string" ? saObj.$ref : undefined;
+  const refB = typeof sbObj.$ref === "string" ? sbObj.$ref : undefined;
+
+  if (refA !== undefined && refB !== undefined) {
+    if (refA === refB) return []; // handled by the components pass
+    const key = `${direction}|${refA}|${refB}`;
+    const cached = memo.get(key);
+    if (cached) return cached;
+    if (visited.has(key)) return []; // cycle: this pair is already on the recursion path
+    visited.add(key);
+    const resolvedA = resolveRef(rawA, refA);
+    const resolvedB = resolveRef(rawB, refB);
+    const result =
+      resolvedA === undefined || resolvedB === undefined
+        ? []
+        : diffSchemaRel(resolvedA, resolvedB, direction, rawA, rawB, depth - 1, visited, memo);
+    visited.delete(key);
+    memo.set(key, result);
+    return result;
+  }
+  if (refA !== undefined || refB !== undefined) {
+    const resolvedA = refA !== undefined ? resolveRef(rawA, refA) : saObj;
+    const resolvedB = refB !== undefined ? resolveRef(rawB, refB) : sbObj;
+    if (resolvedA === undefined || resolvedB === undefined) return [];
+    return diffSchemaRel(resolvedA, resolvedB, direction, rawA, rawB, depth - 1, visited, memo);
+  }
+
+  const changes: OperationChange[] = [];
+
+  const typeA = ownType(saObj);
+  const typeB = ownType(sbObj);
+  if (typeA !== undefined && typeB !== undefined && typeA !== typeB) {
+    changes.push({ field: "", kind: "type_change", from: typeA, to: typeB, rule: ruleFor("type_change", direction, "property") });
+  }
+
+  const enumA = Array.isArray(saObj.enum) ? (saObj.enum as unknown[]) : undefined;
+  const enumBArr = Array.isArray(sbObj.enum) ? (sbObj.enum as unknown[]) : undefined;
+  if (enumA) {
+    const enumBSet = new Set((enumBArr ?? []).map(String));
+    const missing = enumA.map(String).filter((v) => !enumBSet.has(v));
+    if (missing.length > 0) {
+      changes.push({ field: "", kind: "enum_removed", from: missing.join(","), rule: ruleFor("enum_removed", direction, "property") });
+    }
+  }
+  // Contravariant to enum_removed (docs/references/oasdiff-taxonomy.md, "Contravariance
+  // rules" #4: "added to response = BREAKING" — a new possible value is a surprise to
+  // a consumer's switch/case even though nothing was removed). Only meaningful when
+  // the schema was already enum-constrained on both sides; request-side growth is a
+  // constraint loosening (info-level), so this only fires for direction="response".
+  // No SpecChangeKind member fits "value added" (the frozen union has no such kind);
+  // "type_change" is the closest structural shape (an old/new value-set pair) — the
+  // rule id below, not the kind, drives classify.ts's severity for this case.
+  if (direction === "response" && enumA && enumBArr) {
+    const enumASet = new Set(enumA.map(String));
+    const added = enumBArr.map(String).filter((v) => !enumASet.has(v));
+    if (added.length > 0) {
+      changes.push({
+        field: "",
+        kind: "type_change",
+        from: enumA.map(String).join(","),
+        to: enumBArr.map(String).join(","),
+        rule: "response-enum-value-added",
+      });
+    }
+  }
+
+  const propsA = asRecord(saObj.properties) ?? {};
+  const propsB = asRecord(sbObj.properties) ?? {};
+  const requiredA = new Set(Array.isArray(saObj.required) ? (saObj.required as string[]) : []);
+  const requiredB = new Set(Array.isArray(sbObj.required) ? (sbObj.required as string[]) : []);
+
+  for (const key of Object.keys(propsA)) {
+    const propA = propsA[key];
+    if (!(key in propsB)) {
+      const { readOnly, writeOnly } = propPolarity(propA, undefined);
+      if (guardSkips(direction, readOnly, writeOnly)) continue;
+      changes.push({ field: key, kind: "removed", rule: ruleFor("removed", direction, "property") });
+      continue;
+    }
+    const propB = propsB[key];
+    const { readOnly, writeOnly } = propPolarity(propA, propB);
+    if (guardSkips(direction, readOnly, writeOnly)) continue;
+
+    if (!requiredA.has(key) && requiredB.has(key)) {
+      changes.push({ field: key, kind: "added_required", rule: ruleFor("added_required", direction, "property") });
+    }
+
+    const nested = diffSchemaRel(propA, propB, direction, rawA, rawB, depth - 1, visited, memo);
+    for (const c of nested) {
+      changes.push({ ...c, field: c.field ? `${key}.${c.field}` : key });
+    }
+  }
+
+  for (const key of Object.keys(propsB)) {
+    if (key in propsA) continue;
+    if (!requiredB.has(key)) continue;
+    const { readOnly, writeOnly } = propPolarity(undefined, propsB[key]);
+    if (guardSkips(direction, readOnly, writeOnly)) continue;
+    changes.push({ field: key, kind: "added_required", rule: ruleFor("added_required", direction, "property") });
+  }
+
+  return changes;
+}
+
+// ---------------------------------------------------------------------------
+// Step 5: components pass. Diffs each shared schema once, then attributes the
+// result to every operation whose requestBody/response subtree references it —
+// with the direction that specific operation uses it in.
+// ---------------------------------------------------------------------------
+function diffComponents(
+  a: NormalizedSpec,
+  b: NormalizedSpec,
+  memo: Map<string, OperationChange[]>
+): Map<string, OperationChange[]> {
+  const result = new Map<string, OperationChange[]>();
+  const schemaNames = Object.keys(a.schemas).filter((name) => name in b.schemas);
+  if (schemaNames.length === 0) return result;
+
+  // Reverse index: schema name -> operations that reference it, with the direction
+  // each operation uses it in (built once, O(paths) instead of O(changed schemas *
+  // operations) substring scans across the whole document).
+  const usage = buildSchemaUsageIndex(b);
+
+  for (const name of schemaNames) {
+    const sa = a.schemas[name];
+    const sb = b.schemas[name];
+    if (JSON.stringify(sa) === JSON.stringify(sb)) continue; // fast path
+
+    const sites = usage.get(name) ?? [];
+
+    if (sites.length === 0) {
+      // Not referenced anywhere we can find a direction for: fail safe toward
+      // "request" (its rule set is a strict superset of response's breaking cases),
+      // so an unattributed schema change is never silently under-reported.
+      const changes = diffSchema(sa, sb, `${name}.`, "request", a.raw, b.raw, memo);
+      if (changes.length > 0) result.set(` #/components/schemas/${name}`, changes);
+      continue;
+    }
+
+    // CRITICAL FIX (review round 1): the diff — including its readOnly/writeOnly
+    // guard decisions, which are direction-dependent, not just the rule id — must
+    // be computed under each direction a site actually uses, not computed once
+    // under a hardcoded direction and merely relabeled afterward. A schema used
+    // only in responses must never see its request-direction guard applied (and
+    // vice versa). `memo` already dedupes by (direction, refA, refB), so a schema
+    // referenced both ways still only pays for one walk per direction, not one per
+    // site.
+    const byDirection = new Map<Direction, OperationChange[]>();
+    const changesFor = (direction: Direction): OperationChange[] => {
+      let changes = byDirection.get(direction);
+      if (!changes) {
+        changes = diffSchema(sa, sb, `${name}.`, direction, a.raw, b.raw, memo);
+        byDirection.set(direction, changes);
+      }
+      return changes;
+    };
+
+    for (const site of sites) {
+      const changes = changesFor(site.direction);
+      if (changes.length === 0) continue;
+      const key = `${site.method} ${site.path}`;
+      const existing = result.get(key);
+      if (existing) existing.push(...changes);
+      else result.set(key, [...changes]);
+    }
+  }
+
+  return result;
+}
+
+interface UsageSite { method: string; path: string; direction: Direction }
+
+function buildSchemaUsageIndex(spec: NormalizedSpec): Map<string, UsageSite[]> {
+  const index = new Map<string, UsageSite[]>();
+  const refPattern = /#\/(?:components\/schemas|definitions)\/([A-Za-z0-9_.-]+)/g;
+
+  const record = (name: string, method: string, path: string, direction: Direction) => {
+    const list = index.get(name) ?? [];
+    // A schema used both ways in the same operation: request wins (request-direction
+    // rules are always at least as strict as response-direction ones, so this is the
+    // "worst severity wins" choice without needing a second severity comparison).
+    if (list.some((s) => s.method === method && s.path === path && s.direction === "request")) return;
+    const dupeIdx = list.findIndex((s) => s.method === method && s.path === path);
+    if (dupeIdx >= 0) {
+      if (direction === "request") list[dupeIdx] = { method, path, direction };
+    } else {
+      list.push({ method, path, direction });
+    }
+    index.set(name, list);
+  };
+
+  for (const [path, methods] of Object.entries(spec.paths)) {
+    for (const [method, opUnknown] of Object.entries(methods)) {
+      const op = asRecord(opUnknown);
+      if (!op) continue;
+      const reqNames = new Set<string>();
+      for (const m of String(JSON.stringify(op.requestBody ?? null)).matchAll(refPattern)) reqNames.add(m[1]);
+      const respNames = new Set<string>();
+      for (const m of String(JSON.stringify(op.responses ?? null)).matchAll(refPattern)) respNames.add(m[1]);
+      for (const name of reqNames) record(name, method, path, "request");
+      for (const name of respNames) record(name, method, path, "response");
+    }
+  }
+  return index;
+}
+
+// ---------------------------------------------------------------------------
+// diffEntities
+// ---------------------------------------------------------------------------
+export function diffEntities(d: DiffResult): ChangeEntity[] {
+  const entities: ChangeEntity[] = [];
+  const seen = new Set<string>();
+  const add = (type: ChangeEntity["type"], name: string) => {
+    const key = `${type} ${name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entities.push({ type, name });
+  };
+
+  for (const rp of d.specDiff.removedPaths) add("endpoint", rp);
+
+  for (const op of d.specDiff.changedOperations) {
+    if (op.method && op.path) add("endpoint", `${op.method.toUpperCase()} ${op.path}`);
+    for (const c of op.changes) {
+      if (!c.field) continue;
+      const dot = c.field.indexOf(".");
+      if (dot > 0) {
+        add("resource", c.field.slice(0, dot));
+      } else if (!c.field.startsWith("status:")) {
+        add("param", c.field);
+      }
+    }
+  }
+
+  return entities;
+}
