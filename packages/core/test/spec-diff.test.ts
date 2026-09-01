@@ -172,3 +172,200 @@ describe("direction-aware classification (amendment)", () => {
     expect(kinds).toContain("NodeA.tag:removed");
   });
 });
+
+// Fix round 1 (code review): the components pass must compute each shared schema's
+// diff PER DIRECTION actually used at each site, not once under a hardcoded
+// direction with the rule id merely relabeled afterward — because the
+// readOnly/writeOnly guard decision itself is direction-dependent, not just the
+// rule id.
+describe("components-pass direction bug (fix round 1, reviewer repros)", () => {
+  function responseOnlySpec(thingSchema: unknown) {
+    return {
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+      paths: {
+        "/v1/things": {
+          get: { operationId: "getThing", responses: { "200": { content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } } } },
+        },
+      },
+      components: { schemas: { Thing: thingSchema } },
+    };
+  }
+
+  it("readOnly property removed from a component used ONLY in a response is breaking (response-property-removed)", () => {
+    const a = loadSpec(JSON.stringify(responseOnlySpec({
+      type: "object", properties: { id: { type: "string", readOnly: true }, name: { type: "string" } },
+    })));
+    const b = loadSpec(JSON.stringify(responseOnlySpec({
+      type: "object", properties: { name: { type: "string" } },
+    })));
+    const d = diffSpecs(a, b);
+    const changes = d.specDiff.changedOperations.flatMap((o) => o.changes);
+    expect(changes).toContainEqual({ field: "Thing.id", kind: "removed", rule: "response-property-removed" });
+    expect(classifyDiff(d).classification).toBe("breaking");
+  });
+
+  it("writeOnly property removed from a component used ONLY in a response emits NO change (guarded)", () => {
+    const a = loadSpec(JSON.stringify(responseOnlySpec({
+      type: "object", properties: { secret: { type: "string", writeOnly: true }, name: { type: "string" } },
+    })));
+    const b = loadSpec(JSON.stringify(responseOnlySpec({
+      type: "object", properties: { name: { type: "string" } },
+    })));
+    const d = diffSpecs(a, b);
+    const changes = d.specDiff.changedOperations.flatMap((o) => o.changes);
+    expect(changes.find((c) => c.field === "Thing.secret")).toBeUndefined();
+    expect(classifyDiff(d).classification).not.toBe("breaking");
+  });
+});
+
+describe("response-enum-value-added (fix round 1, CRITICAL 2)", () => {
+  it("a new enum value appearing in a response schema is breaking with rule response-enum-value-added", () => {
+    const build = (values: string[]) => ({
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+      paths: {
+        "/v1/things": {
+          get: { operationId: "getThing", responses: { "200": { content: { "application/json": { schema: { type: "object", properties: { state: { type: "string", enum: values } } } } } } } },
+        },
+      },
+      components: { schemas: {} },
+    });
+    const a = loadSpec(JSON.stringify(build(["a", "b"])));
+    const b = loadSpec(JSON.stringify(build(["a", "b", "c"])));
+    const d = diffSpecs(a, b);
+    const changes = d.specDiff.changedOperations.flatMap((o) => o.changes);
+    expect(changes).toContainEqual({ field: "state", kind: "type_change", from: "a,b", to: "a,b,c", rule: "response-enum-value-added" });
+    expect(classifyDiff(d).classification).toBe("breaking");
+  });
+});
+
+describe("remaining amendment tests (fix round 1, IMPORTANT 4)", () => {
+  it("OAS 3.1 type:[T,null] and OAS 3.0 nullable:true are equivalent: zero diff", () => {
+    const build = (nullable311: boolean) => ({
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+      paths: {
+        "/v1/things": {
+          get: {
+            operationId: "getThing",
+            responses: {
+              "200": {
+                content: {
+                  "application/json": {
+                    schema: {
+                      type: "object",
+                      properties: {
+                        value: nullable311 ? { type: ["string", "null"] } : { type: "string", nullable: true },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      components: { schemas: {} },
+    });
+    const a = loadSpec(JSON.stringify(build(true)));
+    const b = loadSpec(JSON.stringify(build(false)));
+    const d = diffSpecs(a, b);
+    expect(d.specDiff.changedOperations).toEqual([]);
+    expect(classifyDiff(d).classification).toBe("docs_only");
+  });
+
+  it("a removal confined to a 404 response is not breaking (v1 does not inspect non-2xx responses)", () => {
+    const build = (withCode: boolean) => ({
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+      paths: {
+        "/v1/things": {
+          get: {
+            operationId: "getThing",
+            responses: {
+              "200": { content: { "application/json": { schema: { type: "object", properties: { name: { type: "string" } } } } } },
+              "404": {
+                content: {
+                  "application/json": {
+                    schema: {
+                      type: "object",
+                      properties: withCode ? { message: { type: "string" }, code: { type: "string" } } : { message: { type: "string" } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      components: { schemas: {} },
+    });
+    const a = loadSpec(JSON.stringify(build(true)));
+    const b = loadSpec(JSON.stringify(build(false)));
+    const d = diffSpecs(a, b);
+    expect(classifyDiff(d).classification).not.toBe("breaking");
+  });
+});
+
+describe("response-media-type-removed (fix round 1, IMPORTANT 5)", () => {
+  it("schema/content removed from a surviving 2xx status is breaking", () => {
+    const a = loadSpec(JSON.stringify({
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+      paths: {
+        "/v1/things": {
+          get: { operationId: "getThing", responses: { "200": { content: { "application/json": { schema: { type: "object" } } } } } },
+        },
+      },
+      components: { schemas: {} },
+    }));
+    const b = loadSpec(JSON.stringify({
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+      paths: {
+        "/v1/things": {
+          get: { operationId: "getThing", responses: { "200": { description: "ok" } } },
+        },
+      },
+      components: { schemas: {} },
+    }));
+    const d = diffSpecs(a, b);
+    const changes = d.specDiff.changedOperations.flatMap((o) => o.changes);
+    expect(changes).toContainEqual({ field: "status:200", kind: "removed", rule: "response-media-type-removed" });
+    expect(classifyDiff(d).classification).toBe("breaking");
+  });
+});
+
+describe("rule-tagged operation removal / deprecation / security changes (fix round 1, IMPORTANT 3)", () => {
+  it("a removed operation gets a rule-tagged operation-removed change alongside the removedPaths string", () => {
+    const a = spec("petstore-a.json");
+    const d = diffSpecs(a, spec("petstore-b.json"));
+    const stores = d.specDiff.changedOperations.find((o) => o.path === "/v1/stores" && o.method === "get");
+    expect(stores).toBeDefined();
+    expect(stores!.changes).toContainEqual({ field: "", kind: "removed", rule: "operation-removed" });
+  });
+
+  it("a deprecation flip gets a rule-tagged operation-deprecated change (non-breaking)", () => {
+    const a = spec("petstore-a.json");
+    const d = diffSpecs(a, spec("petstore-b.json"));
+    const getPet = d.specDiff.changedOperations.find((o) => o.path === "/v1/pets/{id}" && o.method === "get");
+    expect(getPet).toBeDefined();
+    expect(getPet!.changes).toContainEqual({ field: "deprecated", kind: "type_change", from: "false", to: "true", rule: "operation-deprecated" });
+  });
+
+  it("a security scheme change gets a rule-tagged security-scheme-changed change", () => {
+    const build = (scheme: string) => ({
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+      paths: { "/v1/things": { get: { operationId: "getThing" } } },
+      components: { schemas: {}, securitySchemes: { apiKey: { type: "apiKey", name: scheme, in: "header" } } },
+    });
+    const a = loadSpec(JSON.stringify(build("X-Api-Key")));
+    const b = loadSpec(JSON.stringify(build("X-Other-Key")));
+    const d = diffSpecs(a, b);
+    const changes = d.specDiff.changedOperations.flatMap((o) => o.changes);
+    expect(changes).toContainEqual({ field: "security", kind: "removed", rule: "security-scheme-changed" });
+    expect(classifyDiff(d).classification).toBe("breaking");
+  });
+});
