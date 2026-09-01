@@ -4,7 +4,7 @@ import type { ResolveDeps, SearchProvider } from "../src/resolve.js";
 import type { Pack, PackRegistry } from "../src/packs.js";
 import type { Vendor } from "../src/types.js";
 
-type FakeRoute = { status: number; body?: unknown; isJson?: boolean } | "network-error";
+type FakeRoute = { status: number; body?: unknown; isJson?: boolean; contentType?: string } | "network-error";
 
 function makeFakeFetch(routes: Record<string, FakeRoute>, calls: string[] = []): typeof fetch {
   return (async (input: RequestInfo | URL): Promise<Response> => {
@@ -14,9 +14,10 @@ function makeFakeFetch(routes: Record<string, FakeRoute>, calls: string[] = []):
     if (route === "network-error") throw new Error("simulated network failure");
     if (!route) return new Response(null, { status: 404 });
     if (route.isJson) {
-      return new Response(JSON.stringify(route.body), { status: route.status, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(route.body), { status: route.status, headers: { "content-type": route.contentType ?? "application/json" } });
     }
-    return new Response(typeof route.body === "string" ? route.body : "", { status: route.status });
+    const headers = route.contentType ? { "content-type": route.contentType } : undefined;
+    return new Response(typeof route.body === "string" ? route.body : "", { status: route.status, headers });
   }) as typeof fetch;
 }
 
@@ -167,6 +168,37 @@ describe("resolveVendorAuto", () => {
     expect(result!.watch.targets).toEqual(pack.watch);
     expect(result!.resolution).toEqual([{ rung: "pack", confidence: 1, evidence: [expect.stringContaining("stripe")] }]);
     expect(calls.length).toBe(0);
+  });
+
+  it("well-known probe rejects an HTML page served at an openapi path (parked-domain false positive)", async () => {
+    const domain = "parked.example";
+    const fetchFn = makeFakeFetch({
+      [NPM("parked-sdk")]: { status: 404 },
+      [GURU]: { status: 200, isJson: true, body: {} },
+      [wellKnown(domain, "/openapi.json")]: { status: 200, body: "<html><body>Domain for sale</body></html>", contentType: "text/html" },
+    });
+    const deps: ResolveDeps = { fetchFn, search: null, registry: fakeRegistry() };
+
+    const result = await resolveVendorAuto({ packageName: "parked-sdk", ecosystem: "npm", name: "Parked", homepage: `https://${domain}` }, deps);
+
+    expect(result).toBeNull();
+  });
+
+  it("well-known probe accepts a real HTML changelog page but not an HTML openapi.json", async () => {
+    const domain = "realvendor.example";
+    const fetchFn = makeFakeFetch({
+      [NPM("real-sdk")]: { status: 404 },
+      [GURU]: { status: 200, isJson: true, body: {} },
+      [wellKnown(domain, "/openapi.json")]: { status: 200, body: "<html>not a spec</html>", contentType: "text/html" },
+      [wellKnown(domain, "/changelog")]: { status: 200, body: "<html>v2.0 released</html>", contentType: "text/html" },
+    });
+    const deps: ResolveDeps = { fetchFn, search: null, registry: fakeRegistry() };
+
+    const result = await resolveVendorAuto({ packageName: "real-sdk", ecosystem: "npm", name: "RealVendor", homepage: `https://${domain}` }, deps);
+
+    expect(result).not.toBeNull();
+    expect(result!.vendor.openapi_url).toBeUndefined();
+    expect(result!.vendor.changelog_url).toBe(wellKnown(domain, "/changelog"));
   });
 
   describe("boundary cases", () => {

@@ -339,6 +339,20 @@ async function rungDirectory(fetchFn: typeof fetch, homepage: string | undefined
 const WELLKNOWN_OPENAPI_PATHS = ["/openapi.json", "/openapi.yaml", "/.well-known/openapi", "/.well-known/api-catalog"];
 const WELLKNOWN_CHANGELOG_PATHS = ["/changelog", "/docs/changelog", "/releases"];
 
+// A 2xx alone isn't enough: parked domains and catch-all routers happily return 200 HTML for any
+// path. An openapi candidate must plausibly BE a spec (JSON/YAML/plain text); a changelog
+// candidate just needs to be a page a human (or our own future page-diff source) can read.
+const OPENAPI_CONTENT_TYPES = ["application/json", "application/yaml", "text/yaml", "text/plain"];
+const CHANGELOG_CONTENT_TYPES = ["text/html", "text/plain", "application/xhtml+xml"];
+
+function contentTypeAllowed(res: Response, kind: "openapi" | "changelog"): boolean {
+  const raw = res.headers.get("content-type");
+  if (!raw) return kind === "changelog"; // no header at all: tolerate for pages, reject for specs
+  const type = raw.split(";")[0].trim().toLowerCase();
+  const allowed = kind === "openapi" ? OPENAPI_CONTENT_TYPES : CHANGELOG_CONTENT_TYPES;
+  return allowed.includes(type);
+}
+
 async function rungWellKnown(fetchFn: typeof fetch, homepage: string | undefined, vendorSlug: string): Promise<RungOutcome> {
   const candidates: Candidate[] = [];
   const notes: string[] = [];
@@ -347,7 +361,7 @@ async function rungWellKnown(fetchFn: typeof fetch, homepage: string | undefined
 
   const probeOne = async (path: string, kind: "openapi" | "changelog") => {
     const res = await safeFetch(fetchFn, `${base}${path}`);
-    if (res && res.ok) {
+    if (res && res.ok && contentTypeAllowed(res, kind)) {
       candidates.push({ url: `${base}${path}`, kind, baseScore: 0.3, note: `well-known probe hit: ${base}${path}` });
     }
   };
@@ -556,7 +570,7 @@ export async function resolveVendorAuto(input: ResolveInput, deps: ResolveDeps):
   }
   const orgCandidates = [...orgCandidateSeeds].filter(Boolean).slice(0, 3);
 
-  const vendorSlugSeed = name ?? bareName ?? homepage ?? "vendor";
+  const vendorSlugSeed = name ?? bareName ?? domainOf(homepage) ?? homepage ?? "vendor";
   const vendorSlug = slugify(vendorSlugSeed);
 
   const rungPromises: Promise<RungOutcome>[] = [
