@@ -1,7 +1,7 @@
 id: github
 display_name: GitHub
 homepage: https://github.com
-docs_url: https://docs.github.com/en/rest
+docs_url: https://docs.github.com
 changelog_url: https://github.blog/changelog/
 openapi_url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
 github_repo: github/rest-api-description
@@ -9,8 +9,8 @@ packages:
   npm: [octokit, "@octokit/rest"]
   pypi: [PyGithub]
 import_patterns:
-  javascript: ["require('octokit')", "require(\"octokit\")", "require('@octokit/rest')", "require(\"@octokit/rest\")", "from 'octokit'", "from \"octokit\"", "new Octokit("]
-  python: ["import github", "from github", "import PyGithub", "from PyGithub"]
+  javascript: ["require('octokit')", "require(\"octokit\")", "from 'octokit'", "from \"octokit\"", "require('@octokit/rest')", "require(\"@octokit/rest\")"]
+  python: ["import github", "from github"]
 watch:
   - type: openapi
     url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
@@ -21,8 +21,7 @@ watch:
     url: https://github.blog/changelog/
     detection: semantic
     instructions: >
-      Alert on API deprecations, removals, newly required fields, and breaking changes.
-      Ignore navigation, marketing, and cosmetic edits.
+      Alert on API deprecations, removals, breaking changes, and newly required fields.
+      Monitor for changes to REST API, GraphQL schema, and webhook events.
 heal:
   languages: [javascript, typescript, python]
-  notes: "GitHub API versioning is managed through Accept headers; changing behavior often requires updating the API version header."

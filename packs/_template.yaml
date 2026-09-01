@@ -1,56 +1,59 @@
-# Pack template: use this as a reference for the structure and fields.
-# All fields are described below. Only `id`, `display_name`, `packages`, `import_patterns`, and `watch` are required.
+# Autoshim Pack Template
+# This file documents all available fields for a pack definition.
+# Each pack describes a vendor's API and how to detect and watch for changes.
 
-# Unique identifier for the pack (use lowercase with underscores, no spaces)
-id: example
+# Required: unique identifier for this pack
+id: vendor-name
 
-# Human-readable name displayed in UIs
-display_name: Example Vendor
+# Required: human-readable display name
+display_name: Vendor Name
 
-# Optional: vendor's main website
+# Optional: homepage URL
 homepage: https://example.com
 
-# Optional: official API documentation
+# Optional: documentation URL
 docs_url: https://docs.example.com
 
-# Optional: changelog or release notes page
-changelog_url: https://changelog.example.com
+# Optional: changelog URL for announcements
+changelog_url: https://docs.example.com/changelog
 
-# Optional: raw OpenAPI/Swagger spec URL (often on GitHub)
-openapi_url: https://raw.githubusercontent.com/example/example-openapi/main/openapi.yaml
+# Optional: OpenAPI specification URL
+openapi_url: https://raw.githubusercontent.com/example/openapi/main/spec.json
 
-# Optional: GitHub repository containing the API spec or SDK
-github_repo: example/example-openapi
+# Optional: GitHub repository for releases (owner/name format)
+github_repo: example/openapi
 
-# Required: SDK packages by ecosystem (npm, pypi, gomod, rubygems)
-# Maps each ecosystem to a list of package names
+# Required: package mappings by ecosystem
+# Maps ecosystem names to lists of package names to detect integrations
 packages:
-  npm: [example]
-  pypi: [example-sdk]
+  npm: [package-name]
+  pypi: [package-name]
+  rubygems: [package-name]
+  gomod: [github.com/example/package]
 
-# Required: substring patterns to detect imports in source code
-# Maps language names to lists of import patterns to match
+# Required: import patterns for code detection
+# Maps language names to list of patterns to search in source code
 import_patterns:
-  javascript: ["require('example')", 'require("example")', "from 'example'", 'from "example"']
-  python: ["import example", "from example"]
+  javascript: ["require('package')", "from 'package'"]
+  python: ["import package", "from package"]
 
-# Required: watch targets for monitoring API changes
-# Each target specifies how and where to watch for changes
+# Required: watch targets for change detection
+# List of sources to monitor for API changes
 watch:
   - type: openapi
-    url: https://raw.githubusercontent.com/example/example-openapi/main/openapi.yaml
+    url: https://raw.githubusercontent.com/example/openapi/main/spec.json
     detection: exact
   - type: github_release
-    repo: example/example-openapi
+    repo: example/openapi
   - type: page
-    url: https://changelog.example.com
+    url: https://docs.example.com/changelog
     detection: semantic
     instructions: >
-      Alert on API version changes, deprecations, removals, newly required fields.
-      Ignore cosmetic and navigation changes.
+      Custom instructions for analyzing changelog page.
+      Alert on new API versions, deprecations, breaking changes.
 
-# Optional: healing configuration (how autoshim should patch code for this vendor)
+# Optional: healing configuration
+# Guidance for how to automatically patch code against breaking changes
 heal:
   languages: [javascript, typescript, python]
-  notes: >
-    Example vendor uses API versioning. Changes often require updating the version parameter.
+  notes: "Describe any special handling or version pinning requirements."

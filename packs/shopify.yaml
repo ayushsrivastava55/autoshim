@@ -1,15 +1,15 @@
 id: shopify
 display_name: Shopify
-homepage: https://shopify.dev
-docs_url: https://shopify.dev/docs
+homepage: https://shopify.com
+docs_url: https://shopify.dev
 changelog_url: https://shopify.dev/changelog
 github_repo: Shopify/shopify-api-js
 packages:
   npm: ["@shopify/shopify-api", "shopify-api-node"]
   pypi: [ShopifyAPI]
 import_patterns:
-  javascript: ["require('@shopify/shopify-api')", "require(\"@shopify/shopify-api\")", "require('shopify-api-node')", "require(\"shopify-api-node\")", "from '@shopify/shopify-api'", "from \"@shopify/shopify-api\""]
-  python: ["import shopify", "from shopify", "import ShopifyAPI", "from ShopifyAPI"]
+  javascript: ["require('@shopify/shopify-api')", "require(\"@shopify/shopify-api\")", "from '@shopify/shopify-api'", "from \"@shopify/shopify-api\""]
+  python: ["import shopify", "from shopify"]
 watch:
   - type: github_release
     repo: Shopify/shopify-api-js
@@ -17,8 +17,7 @@ watch:
     url: https://shopify.dev/changelog
     detection: semantic
     instructions: >
-      Alert on API deprecations, removals, newly required fields, and breaking changes.
-      Ignore navigation, marketing, and cosmetic edits.
+      Alert on API version changes, deprecations, schema changes, and breaking
+      modifications to REST and GraphQL APIs.
 heal:
   languages: [javascript, typescript, python]
-  notes: "Shopify API uses versioning through access token scopes and API version dates; changing behavior often requires updating the API version."

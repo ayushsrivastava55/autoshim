@@ -1,0 +1,1 @@
+{ "name": "sample", "dependencies": { "stripe": "^16.0.0", "klaviyo-api": "^10.0.0" }, "devDependencies": { "vitest": "^3.0.0" } }

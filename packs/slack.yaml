@@ -1,0 +1,23 @@
+id: slack
+display_name: Slack
+homepage: https://slack.com
+docs_url: https://api.slack.com
+changelog_url: https://docs.slack.dev/changelog
+github_repo: slackapi/node-slack-sdk
+packages:
+  npm: ["@slack/web-api", "@slack/bolt"]
+  pypi: [slack-sdk, slack-bolt]
+import_patterns:
+  javascript: ["require('@slack/web-api')", "require(\"@slack/web-api\")", "from '@slack/web-api'", "from \"@slack/web-api\"", "require('@slack/bolt')", "require(\"@slack/bolt\")"]
+  python: ["import slack", "from slack", "from slack_sdk", "import slack_bolt"]
+watch:
+  - type: github_release
+    repo: slackapi/node-slack-sdk
+  - type: page
+    url: https://docs.slack.dev/changelog
+    detection: semantic
+    instructions: >
+      Alert on API deprecations, endpoint changes, webhook format changes, and
+      breaking modifications to the Web API and Events API.
+heal:
+  languages: [javascript, typescript, python]

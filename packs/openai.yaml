@@ -21,8 +21,7 @@ watch:
     url: https://platform.openai.com/docs/changelog
     detection: semantic
     instructions: >
-      Alert on API deprecations, removals, newly required fields, and breaking changes.
-      Ignore navigation, marketing, and cosmetic edits.
+      Alert on new models, API deprecations, endpoint changes, parameter removals,
+      and breaking changes in request/response formats.
 heal:
   languages: [javascript, typescript, python]
-  notes: "OpenAI API versions are specified in request headers; changing behavior often requires updating the API version."

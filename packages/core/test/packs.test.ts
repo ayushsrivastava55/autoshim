@@ -36,4 +36,15 @@ describe("packs", () => {
     expect(v.kind).toBe("pack");
     expect(v.sdk_packages).toContainEqual({ ecosystem: "npm", name: "stripe" });
   });
+  it("rejects invalid YAML syntax", () => {
+    expect(() => parsePack("id: test\n  invalid: [unclosed")).toThrow();
+  });
+  it("rejects unknown ecosystem keys in packages", () => {
+    const yaml = `id: test\ndisplay_name: Test\npackages:\n  totallyNotAnEcosystem: [foo]\nimport_patterns: {}\nwatch: []\n`;
+    expect(() => parsePack(yaml)).toThrow();
+  });
+  it("rejects non-array package values", () => {
+    const yaml = `id: test\ndisplay_name: Test\npackages:\n  npm: "not-an-array"\nimport_patterns: {}\nwatch: []\n`;
+    expect(() => parsePack(yaml)).toThrow();
+  });
 });
