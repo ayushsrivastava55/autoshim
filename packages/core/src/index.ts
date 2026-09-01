@@ -3,3 +3,4 @@ export * from "./types.js";
 export * from "./fingerprint.js";
 export * from "./packs.js";
 export * from "./discover.js";
+export * from "./resolve.js";
