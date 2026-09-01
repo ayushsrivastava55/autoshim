@@ -24,7 +24,10 @@ const PackSchema = z.object({
   changelog_url: z.string().optional(),
   openapi_url: z.string().optional(),
   github_repo: z.string().optional(),
-  packages: z.record(z.array(z.string())).catch({}),
+  packages: z
+    .record(z.enum(["npm", "pypi", "gomod", "rubygems"]), z.array(z.string()))
+    .optional()
+    .default({}) as any as z.ZodType<Partial<Record<Ecosystem, string[]>>>,
   import_patterns: z.record(z.array(z.string())),
   watch: z.array(
     z.object({
@@ -107,9 +110,9 @@ export function loadPacks(yamlTexts: string[]): PackRegistry {
     },
     vendorFor(pack: Pack): Vendor {
       const sdk_packages: Array<{ ecosystem: Ecosystem; name: string }> = [];
-      for (const [ecosystem, names] of Object.entries(pack.packages)) {
+      for (const [ecosystem, names] of Object.entries(pack.packages) as Array<[Ecosystem, string[]]>) {
         for (const name of names) {
-          sdk_packages.push({ ecosystem: ecosystem as Ecosystem, name });
+          sdk_packages.push({ ecosystem, name });
         }
       }
 
