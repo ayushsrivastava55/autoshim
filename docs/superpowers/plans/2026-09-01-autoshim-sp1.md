@@ -856,6 +856,14 @@ for (const [out, rev] of Object.entries(revs)) {
 ```
 (Executor note: raw.githubusercontent does not resolve `~N` relative revs — resolve two concrete SHAs first via `https://api.github.com/repos/github/rest-api-description/commits?path=${FILE}&per_page=100`, take the newest and the ~100th, and substitute them. Adjust the script accordingly when implementing.)
 
+**AMENDMENTS (2026-09-01, post code-study — these override any contradicting text above; see `docs/research/2026-09-01-code-study.md`):**
+1. **No rename detection in v1.** Delete algorithm step 2 and the "rename is detected" test; a removed+added path pair is reported as removal + addition (matching oasdiff/libopenapi). The `renamed` SpecChangeKind stays in the type, unemitted.
+2. **Stable rule ids.** Add optional `rule?: string` to `OperationChange` (additive change to Task 2's type — coordinate: it is optional, so no ripple). Every emitted change carries a kebab-case id, e.g. `request-parameter-became-required`, `response-property-removed`, `request-parameter-type-changed`, `request-enum-value-removed`, `response-enum-value-added`, `operation-removed`, `operation-deprecated`, `security-scheme-changed`.
+3. **Direction-aware classification with guards.** Request vs response polarity applies: property/param removal or requiredness in REQUESTS breaks; property removal in RESPONSES breaks; enum value REMOVED from request breaks, enum value ADDED to response breaks; a `readOnly: true` property is exempt from request-side rules, `writeOnly: true` exempt from response-side rules; response media-type removal breaks (negotiated field); changes confined to non-2xx responses are downgraded to additive/docs_only.
+4. **Normalization pass in the loader/differ boundary:** flatten `allOf` into a synthesized schema before diffing, and normalize OpenAPI 3.1 `type: [X, "null"]` to 3.0-style `nullable` so the two conventions never diff against each other.
+5. **Cycle + memo discipline:** visited-set of `$ref` names per traversal side (circular refs equal iff same ref name); memoize schema-pair comparisons keyed by (refA, refB, direction).
+6. Tests to add for the amendments: readOnly-required-property added → NOT breaking; enum value added to response schema → breaking with rule `response-enum-value-added`; 3.1 nullable-array vs 3.0 nullable → no diff; removal confined to a 404 response → not breaking.
+
 - [ ] **Step 3: Run to verify fail**, **Step 4: implement `diff.ts` + `classify.ts` per the algorithm above** (keep `diffSchema` its own function; fast-path stringify compares before any recursion), **Step 5: verify petstore tests pass**, **Step 6:** run `node scripts/fetch-github-spec-fixture.mjs && AUTOSHIM_NET_TESTS=1 pnpm --filter @autoshim/core test spec-diff-github` and make the perf bar; export new modules from `index.ts`.
 - [ ] **Step 7: Commit** — `git add -A && git commit -m "feat(core): openapi structural differ with classification"`
 
@@ -1975,6 +1983,8 @@ describe("quality bars (spec §21)", () => {
 });
 ```
 (Executor: QB4 needs `resolveVendor` to not hit the real npm registry — pass a fetchFn returning 404 through `cmdAdd`'s optional deps, or accept `vendor_id` resolution from the explicit changelog input alone; wire an optional `fetchFn` through `cmdAdd` for this.)
+
+**AMENDMENT (2026-09-01):** add one more named test to this task — `packages/core/test/no-network.test.ts`: statically scan `packages/core/src/**` EXCLUDING `src/sources/` and `src/extract.ts` and `src/heal.ts` for network primitives (`fetch(`, `http.request`, `https.request`, `net.connect`, `XMLHttpRequest`, `WebSocket`) and assert zero matches — mechanical proof of the "core is pure" claim for the README.
 
 - [ ] **Step 2: fail → implement glue gaps → pass** (`pnpm test` fully green from repo root).
 - [ ] **Step 3: Write `README.md`:** what Autoshim is (one-liner from spec), quickstart (`npx autoshim init` → `add --openapi` → `watch --once`), env vars table (GITHUB_TOKEN / ANTHROPIC_API_KEY / CONTEXT_API_KEY and what degrades without each), the honesty line from the PRD ("Any vendor can be watched. Pack vendors get smarter patches."), pack contribution pointer, Apache-2.0.
