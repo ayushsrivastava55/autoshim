@@ -1,0 +1,4 @@
+openai>=1.30
+requests==2.32.3
+# comment line
+slack-sdk[optional]>=3.0 ; python_version >= "3.9"

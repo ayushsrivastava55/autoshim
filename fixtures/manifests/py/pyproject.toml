@@ -1,0 +1,7 @@
+[project]
+name = "sample"
+dependencies = ["stripe>=9", "httpx"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+ShopifyAPI = "^12.0"
