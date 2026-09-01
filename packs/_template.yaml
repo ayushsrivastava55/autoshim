@@ -1,0 +1,59 @@
+# Autoshim Pack Template
+# This file documents all available fields for a pack definition.
+# Each pack describes a vendor's API and how to detect and watch for changes.
+
+# Required: unique identifier for this pack
+id: vendor-name
+
+# Required: human-readable display name
+display_name: Vendor Name
+
+# Optional: homepage URL
+homepage: https://example.com
+
+# Optional: documentation URL
+docs_url: https://docs.example.com
+
+# Optional: changelog URL for announcements
+changelog_url: https://docs.example.com/changelog
+
+# Optional: OpenAPI specification URL
+openapi_url: https://raw.githubusercontent.com/example/openapi/main/spec.json
+
+# Optional: GitHub repository for releases (owner/name format)
+github_repo: example/openapi
+
+# Required: package mappings by ecosystem
+# Maps ecosystem names to lists of package names to detect integrations
+packages:
+  npm: [package-name]
+  pypi: [package-name]
+  rubygems: [package-name]
+  gomod: [github.com/example/package]
+
+# Required: import patterns for code detection
+# Maps language names to list of patterns to search in source code
+import_patterns:
+  javascript: ["require('package')", "from 'package'"]
+  python: ["import package", "from package"]
+
+# Required: watch targets for change detection
+# List of sources to monitor for API changes
+watch:
+  - type: openapi
+    url: https://raw.githubusercontent.com/example/openapi/main/spec.json
+    detection: exact
+  - type: github_release
+    repo: example/openapi
+  - type: page
+    url: https://docs.example.com/changelog
+    detection: semantic
+    instructions: >
+      Custom instructions for analyzing changelog page.
+      Alert on new API versions, deprecations, breaking changes.
+
+# Optional: healing configuration
+# Guidance for how to automatically patch code against breaking changes
+heal:
+  languages: [javascript, typescript, python]
+  notes: "Describe any special handling or version pinning requirements."

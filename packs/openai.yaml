@@ -1,0 +1,27 @@
+id: openai
+display_name: OpenAI
+homepage: https://openai.com
+docs_url: https://platform.openai.com/docs
+changelog_url: https://platform.openai.com/docs/changelog
+openapi_url: https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml
+github_repo: openai/openai-openapi
+packages:
+  npm: [openai]
+  pypi: [openai]
+import_patterns:
+  javascript: ["require('openai')", "require(\"openai\")", "from 'openai'", "from \"openai\"", "new OpenAI("]
+  python: ["import openai", "from openai"]
+watch:
+  - type: openapi
+    url: https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml
+    detection: exact
+  - type: github_release
+    repo: openai/openai-openapi
+  - type: page
+    url: https://platform.openai.com/docs/changelog
+    detection: semantic
+    instructions: >
+      Alert on new models, API deprecations, endpoint changes, parameter removals,
+      and breaking changes in request/response formats.
+heal:
+  languages: [javascript, typescript, python]

@@ -1,0 +1,27 @@
+id: github
+display_name: GitHub
+homepage: https://github.com
+docs_url: https://docs.github.com
+changelog_url: https://github.blog/changelog/
+openapi_url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+github_repo: github/rest-api-description
+packages:
+  npm: [octokit, "@octokit/rest"]
+  pypi: [PyGithub]
+import_patterns:
+  javascript: ["require('octokit')", "require(\"octokit\")", "from 'octokit'", "from \"octokit\"", "require('@octokit/rest')", "require(\"@octokit/rest\")"]
+  python: ["import github", "from github"]
+watch:
+  - type: openapi
+    url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+    detection: exact
+  - type: github_release
+    repo: github/rest-api-description
+  - type: page
+    url: https://github.blog/changelog/
+    detection: semantic
+    instructions: >
+      Alert on API deprecations, removals, breaking changes, and newly required fields.
+      Monitor for changes to REST API, GraphQL schema, and webhook events.
+heal:
+  languages: [javascript, typescript, python]

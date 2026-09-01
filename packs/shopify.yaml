@@ -1,0 +1,23 @@
+id: shopify
+display_name: Shopify
+homepage: https://shopify.com
+docs_url: https://shopify.dev
+changelog_url: https://shopify.dev/changelog
+github_repo: Shopify/shopify-api-js
+packages:
+  npm: ["@shopify/shopify-api", "shopify-api-node"]
+  pypi: [ShopifyAPI]
+import_patterns:
+  javascript: ["require('@shopify/shopify-api')", "require(\"@shopify/shopify-api\")", "from '@shopify/shopify-api'", "from \"@shopify/shopify-api\""]
+  python: ["import shopify", "from shopify"]
+watch:
+  - type: github_release
+    repo: Shopify/shopify-api-js
+  - type: page
+    url: https://shopify.dev/changelog
+    detection: semantic
+    instructions: >
+      Alert on API version changes, deprecations, schema changes, and breaking
+      modifications to REST and GraphQL APIs.
+heal:
+  languages: [javascript, typescript, python]
