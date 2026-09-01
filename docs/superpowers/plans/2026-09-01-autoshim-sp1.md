@@ -600,6 +600,39 @@ describe("detectLanguages", () => {
 
 ---
 
+### Task 4b: Vendor auto-resolution ladder (added 2026-09-01 per user direction — "no pasting URLs")
+
+**Files:**
+- Create: `packages/core/src/resolve.ts`
+- Test: `packages/core/test/resolve.test.ts`
+
+**Interfaces:**
+- Consumes: `Vendor`, `WatchTarget`, `Ecosystem` (T2), `PackRegistry` (T3), `DetectedIntegration` (T4).
+- Produces:
+```typescript
+export interface SearchProvider {           // Context.dev-backed impl arrives in Task 10; tests use fakes
+  search(query: string, limit: number): Promise<{ url: string; title: string; snippet?: string }[]>;
+}
+export interface ResolvedVendor {
+  vendor: Vendor;
+  watch: Watch;
+  resolution: { rung: "pack" | "registry" | "github_convention" | "directory" | "wellknown" | "search"; confidence: number; evidence: string[] }[];
+}
+export interface ResolveDeps { fetchFn?: typeof fetch; search?: SearchProvider | null; registry: PackRegistry }
+export async function resolveVendorAuto(input: { packageName?: string; ecosystem?: Ecosystem; name?: string; homepage?: string }, deps: ResolveDeps): Promise<ResolvedVendor | null>;
+```
+**Behavior — parallel fan-out, cross-validated (NOT a sequential fallback chain):**
+1. Rungs run concurrently via `Promise.allSettled`: (a) pack registry lookup; (b) npm `https://registry.npmjs.org/<name>` / PyPI `https://pypi.org/pypi/<name>/json` → repository.url + homepage; (c) GitHub spec-repo convention probes: `repos/<org>/openapi`, `<org>/<name>-openapi`, `<org>/api-spec` via `api.github.com` (existence + has releases); (d) APIs.guru `https://api.apis.guru/v2/list.json` matched by vendor domain/name; (e) well-known probes on the homepage domain: `/openapi.json`, `/openapi.yaml`, `/.well-known/openapi`, `/.well-known/api-catalog`, `/changelog`, `/docs/changelog`, `/releases` (HEAD/GET, accept 2xx with sane content-type); (f) `deps.search` (when non-null): queries `"<vendor> API changelog"` and `"<vendor> openapi spec"`.
+2. Cross-validation scoring: a candidate URL found by ≥2 independent rungs, or hosted on the vendor's own domain (homepage/repo org match), scores high; search-only candidates on third-party domains are rejected. `confidence` recorded per accepted target.
+3. Output: `Vendor` (`custom_<slug>` unless a pack matched) + `Watch` whose targets are ordered spec > github_release > page, plus the `resolution` audit trail (which rung found what — surfaced by `autoshim add` so the user sees the reasoning).
+4. All HTTP through injected `fetchFn`; every rung failure is caught and recorded, never thrown; zero results → `null` (caller tells the user what was tried).
+- [ ] **Step 1: failing tests** — fake fetchFn serving canned npm metadata + a github repo hit + apis.guru list + a 404-ing well-known set; assert: (i) klaviyo-style case resolves via registry+github_convention with a github_release target and confidence ≥ 0.8 evidence trail; (ii) search-only third-party-domain candidate is rejected; (iii) two-rung agreement beats single-rung; (iv) total-miss returns null with all rungs recorded as attempted; (v) a pack match short-circuits to the pack's targets.
+- [ ] **Step 2: RED**, **Step 3: implement**, **Step 4: GREEN + full suite**, **Step 5: commit** `feat(core): vendor auto-resolution ladder (parallel fan-out, cross-validated)`.
+
+**Wiring note for Task 14/15 (binding):** `cmdAdd --package npm:x` and `cmdInit` unknown-integration flow call `resolveVendorAuto`; pasting URLs remains the manual override. `deps.search` is null until Task 10 lands the Context.dev SearchProvider.
+
+---
+
 ### Task 5: OpenAPI loader/normalizer
 
 **Files:**
@@ -855,6 +888,14 @@ for (const [out, rev] of Object.entries(revs)) {
 }
 ```
 (Executor note: raw.githubusercontent does not resolve `~N` relative revs — resolve two concrete SHAs first via `https://api.github.com/repos/github/rest-api-description/commits?path=${FILE}&per_page=100`, take the newest and the ~100th, and substitute them. Adjust the script accordingly when implementing.)
+
+**AMENDMENTS (2026-09-01, post code-study — these override any contradicting text above; see `docs/research/2026-09-01-code-study.md`):**
+1. **No rename detection in v1.** Delete algorithm step 2 and the "rename is detected" test; a removed+added path pair is reported as removal + addition (matching oasdiff/libopenapi). The `renamed` SpecChangeKind stays in the type, unemitted.
+2. **Stable rule ids.** Add optional `rule?: string` to `OperationChange` (additive change to Task 2's type — coordinate: it is optional, so no ripple). Every emitted change carries a kebab-case id, e.g. `request-parameter-became-required`, `response-property-removed`, `request-parameter-type-changed`, `request-enum-value-removed`, `response-enum-value-added`, `operation-removed`, `operation-deprecated`, `security-scheme-changed`.
+3. **Direction-aware classification with guards.** Request vs response polarity applies: property/param removal or requiredness in REQUESTS breaks; property removal in RESPONSES breaks; enum value REMOVED from request breaks, enum value ADDED to response breaks; a `readOnly: true` property is exempt from request-side rules, `writeOnly: true` exempt from response-side rules; response media-type removal breaks (negotiated field); changes confined to non-2xx responses are downgraded to additive/docs_only.
+4. **Normalization pass in the loader/differ boundary:** flatten `allOf` into a synthesized schema before diffing, and normalize OpenAPI 3.1 `type: [X, "null"]` to 3.0-style `nullable` so the two conventions never diff against each other.
+5. **Cycle + memo discipline:** visited-set of `$ref` names per traversal side (circular refs equal iff same ref name); memoize schema-pair comparisons keyed by (refA, refB, direction).
+6. Tests to add for the amendments: readOnly-required-property added → NOT breaking; enum value added to response schema → breaking with rule `response-enum-value-added`; 3.1 nullable-array vs 3.0 nullable → no diff; removal confined to a 404 response → not breaking.
 
 - [ ] **Step 3: Run to verify fail**, **Step 4: implement `diff.ts` + `classify.ts` per the algorithm above** (keep `diffSchema` its own function; fast-path stringify compares before any recursion), **Step 5: verify petstore tests pass**, **Step 6:** run `node scripts/fetch-github-spec-fixture.mjs && AUTOSHIM_NET_TESTS=1 pnpm --filter @autoshim/core test spec-diff-github` and make the perf bar; export new modules from `index.ts`.
 - [ ] **Step 7: Commit** — `git add -A && git commit -m "feat(core): openapi structural differ with classification"`
@@ -1224,6 +1265,12 @@ describe("contextDevSource", () => {
 ```
 
 - [ ] **Step 2: fail**, **Step 3: implement**, **Step 4: pass**, export.
+**AMENDMENTS (2026-09-01 — use the full Context.dev surface; docs mirror is authoritative):**
+1. Also implement `contextDevSearchProvider(apiKey, fetchFn): SearchProvider` (Task 4b's interface) using `POST /web/search` (1 credit/10 results) — this activates the resolver's search rung.
+2. Support two more monitor target flavors behind the same ChangeSource: `sitemap` (watch a docs sitemap for page add/remove — a vanished endpoint-doc page is a deprecation signal) and `extract` (structured changelog feed with the pack's or generic schema). Config shape per the mirrored monitors guide; both emit VendorChanges through the same itemsToChanges path.
+3. Implement `contextDevScreenshot(url): Promise<{imageUrl: string} | null>` (screenshots endpoint per mirror) exposed for Task 13's evidence hook; failures return null, never throw.
+4. Tests extend the fake-fetch API accordingly (search, sitemap-monitor create, screenshot).
+
 - [ ] **Step 5: Commit** — `git add -A && git commit -m "feat(core): context.dev page monitor change source"`
 
 ---
@@ -1577,6 +1624,8 @@ describe("publish one-PR-per-vendor rule", () => {
   });
 });
 ```
+
+**AMENDMENT (2026-09-01):** `prBody`/`issueBody` accept an optional `evidence?: { screenshotUrl?: string }` final parameter; when present, an `## Evidence` section embeds the screenshot link ("changelog as seen at detection time"). Callers pass it when Task 10's screenshot helper returns non-null; absence changes nothing. One test: body contains the Evidence section iff evidence given.
 
 - [ ] **Step 2: fail**, **Step 3: implement `publish.ts`** (PR body template exactly PRD §13.2 with `{vendor}/{title}/{classification}/{confidence}` interpolation; Verify checklist items `- [ ] run tests` and `- [ ] check staging against vendor test mode`), **Step 4: pass**, export.
 - [ ] **Step 5: Commit** — `git add -A && git commit -m "feat(core): publish decision matrix, templates, one-PR rule"`
@@ -1976,6 +2025,8 @@ describe("quality bars (spec §21)", () => {
 ```
 (Executor: QB4 needs `resolveVendor` to not hit the real npm registry — pass a fetchFn returning 404 through `cmdAdd`'s optional deps, or accept `vendor_id` resolution from the explicit changelog input alone; wire an optional `fetchFn` through `cmdAdd` for this.)
 
+**AMENDMENT (2026-09-01):** add one more named test to this task — `packages/core/test/no-network.test.ts`: statically scan `packages/core/src/**` EXCLUDING `src/sources/` and `src/extract.ts` and `src/heal.ts` for network primitives (`fetch(`, `http.request`, `https.request`, `net.connect`, `XMLHttpRequest`, `WebSocket`) and assert zero matches — mechanical proof of the "core is pure" claim for the README.
+
 - [ ] **Step 2: fail → implement glue gaps → pass** (`pnpm test` fully green from repo root).
 - [ ] **Step 3: Write `README.md`:** what Autoshim is (one-liner from spec), quickstart (`npx autoshim init` → `add --openapi` → `watch --once`), env vars table (GITHUB_TOKEN / ANTHROPIC_API_KEY / CONTEXT_API_KEY and what degrades without each), the honesty line from the PRD ("Any vendor can be watched. Pack vendors get smarter patches."), pack contribution pointer, Apache-2.0.
 - [ ] **Step 4: Commit** — `git add -A && git commit -m "test: quality-bar integration suite; docs: README"`
@@ -1987,3 +2038,21 @@ describe("quality bars (spec §21)", () => {
 1. **Spec coverage:** discover→T4; packs→T3; add-vendor incl. registry-metadata prefill→T14; watch openapi/local→T7, github_release→T9, page/Context.dev→T10; understand/classify→T6+T8; fingerprint/dedupe/ignore→T2+T14; impact→T11; heal+caps→T12; publish templates/one-PR/branch→T13; CLI surface §8→T14+T15; error handling §9→T7/T9/T10/T15 tests; quality bars §21→T6 (github pair) + T16. Not covered anywhere (deliberate, spec §11): sitemap/extract targets, Go/Ruby healing, hosted anything. The `.autoshim/config.yaml` `schedule` field is written but only informational, matching the spec.
 2. **Placeholders:** QB2 body intentionally references the identical Task-15 test by content; executor copies it. Pack seed data for 4 packs is specified as field lists rather than full YAML — the stripe.yaml example plus field lists is complete instruction, not a TBD.
 3. **Type consistency check done:** `HealResult.whatChanged` (camel) vs agent JSON `what_changed` (wire) — `heal()` maps between them (T12 produces `HealResult`, T13 consumes `whatChanged`). `PollResult.skipped`, `SourceState.snapshot`, `fp8`, `branchName` names verified consistent across T7/T9/T10/T13/T15.
+
+---
+
+### Task 17: MCP server (added 2026-09-01 per strategy decision)
+
+**Files:**
+- Create: `packages/cli/src/mcp.ts`
+- Modify: `packages/cli/src/index.ts` (add `mcp` subcommand), `packages/cli/package.json` (dep `@modelcontextprotocol/sdk`)
+- Test: `packages/cli/test/mcp.test.ts`
+
+**Interfaces:**
+- Consumes: `cmdDiscover` (T14), `runWatch`, `runSimulate`, `runImpact`, `runHeal`, `PipelineDeps` (T15).
+- Produces: `autoshim mcp` — a stdio MCP server exposing five tools: `discover`, `watch_once` (arg: vendor?, always no-publish/dry-run), `impact` (arg: change_id), `heal_dry_run` (arg: change_id?), `list_changes`. Each returns the same JSON the CLI's `--json` mode prints. The server NEVER publishes (no PRs/issues over MCP in v1 — read-only analysis; healing returns the diff text).
+- Dep exception to the Global Constraints whitelist, ruled by controller: `@modelcontextprotocol/sdk` is allowed (official SDK, required for the channel).
+
+- [ ] **Step 1: Write the failing test** — `packages/cli/test/mcp.test.ts`: construct the server object via an exported `buildMcpServer(rootDir, deps)` factory (do not spawn stdio in tests); assert it registers exactly the five tools with the names above and that calling the `discover` tool handler on a fixture repo returns JSON containing `package_name` entries. Use the same fixture-repo helper pattern as `commands.test.ts`.
+- [ ] **Step 2: fail**, **Step 3: implement** with `@modelcontextprotocol/sdk` (McpServer + StdioServerTransport; `registerTool` per tool; `autoshim mcp` runs `await server.connect(new StdioServerTransport())`). Follow the SDK's current README for exact imports at execution time — do not guess from memory.
+- [ ] **Step 4: pass**, **Step 5: Commit** — `git add -A && git commit -m "feat(cli): mcp server exposing discover/watch/impact/heal tools"`
