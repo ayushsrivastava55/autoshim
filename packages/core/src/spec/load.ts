@@ -118,6 +118,9 @@ export function loadSpec(text: string): NormalizedSpec {
  * Resolves a JSON Pointer reference (like "#/components/schemas/X") in a parsed spec.
  * Returns undefined if the path doesn't exist.
  *
+ * Note: RFC 6901 escaped tokens (~0 for ~ and ~1 for /) are unsupported; refs
+ * containing these tokens will not resolve (treated as literal key names, not unescaped).
+ *
  * Reference: https://tools.ietf.org/html/rfc6901 (JSON Pointer)
  */
 export function resolveRef(raw: unknown, ref: string): unknown | undefined {
@@ -145,12 +148,21 @@ export function resolveRef(raw: unknown, ref: string): unknown | undefined {
  * - Takes scalar values from branches (later branches win on conflict)
  * - Returns non-objects as-is
  * - Respects depth cap of 8 to prevent infinite recursion
+ * - Detects $ref cycles: when a $ref is seen a second time in the resolution path,
+ *   marks it with `{ $ref: <ref>, "x-autoshim-circular": true }` and stops flattening
+ *   that branch, allowing the differ to compare cyclic refs by identity
  *
  * Reference: OpenAPI 3.0+ allOf specification:
  * https://spec.openapis.org/oas/v3.0.3#composition-and-inheritance-polymorphism
  */
-export function flattenAllOf(schema: unknown, raw: unknown, depth?: number): unknown {
+export function flattenAllOf(
+  schema: unknown,
+  raw: unknown,
+  depth?: number,
+  visitedRefs?: Set<string>
+): unknown {
   const maxDepth = depth ?? 8;
+  const visited = visitedRefs ?? new Set<string>();
 
   if (maxDepth <= 0) {
     return schema;
@@ -176,26 +188,52 @@ export function flattenAllOf(schema: unknown, raw: unknown, depth?: number): unk
 
   for (const branch of allOf) {
     let resolved = branch;
+    let refStr: string | undefined;
 
     // Resolve $ref if present
     if (typeof branch === "object" && branch !== null && !Array.isArray(branch)) {
       const branchObj = branch as Record<string, unknown>;
       if ("$ref" in branchObj && typeof branchObj.$ref === "string") {
-        resolved = resolveRef(raw, branchObj.$ref);
+        refStr = branchObj.$ref;
+
+        // Detect cycle
+        if (visited.has(refStr)) {
+          // Return marker for differ to compare by ref identity
+          merged.$ref = refStr;
+          merged["x-autoshim-circular"] = true;
+          continue;
+        }
+
+        // Add to visited before resolving to catch cycles
+        visited.add(refStr);
+        resolved = resolveRef(raw, refStr);
         if (resolved === undefined) {
+          visited.delete(refStr);
           continue;
         }
       }
     }
 
     // Recursively flatten nested allOf
-    resolved = flattenAllOf(resolved, raw, maxDepth - 1);
+    resolved = flattenAllOf(resolved, raw, maxDepth - 1, visited);
+
+    // Clean up visited set when backtracking from a ref
+    if (refStr) {
+      visited.delete(refStr);
+    }
 
     if (typeof resolved !== "object" || resolved === null || Array.isArray(resolved)) {
       continue;
     }
 
     const resolvedObj = resolved as Record<string, unknown>;
+
+    // Preserve circular markers from nested calls
+    if ("x-autoshim-circular" in resolvedObj) {
+      merged.$ref = resolvedObj.$ref;
+      merged["x-autoshim-circular"] = true;
+      // Continue to merge other properties if present
+    }
 
     // Merge properties
     if ("properties" in resolvedObj && typeof resolvedObj.properties === "object" && resolvedObj.properties !== null) {
@@ -236,6 +274,9 @@ export function flattenAllOf(schema: unknown, raw: unknown, depth?: number): unk
  * Converts `{ type: ["string", "null"] }` to `{ type: "string", nullable: true }`.
  * Only transforms 2-element arrays where one element is "null"; others are unchanged.
  * Non-object inputs are passed through as-is.
+ *
+ * This is a per-schema-node transform: callers must recurse into nested schemas
+ * (properties, items, allOf, etc.) separately.
  *
  * Reference: OpenAPI 3.0 nullable:
  * https://spec.openapis.org/oas/v3.0.3#data-types

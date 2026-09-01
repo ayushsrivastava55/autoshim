@@ -82,6 +82,11 @@ describe("resolveRef", () => {
     const raw = { definitions: { Pet: { type: "object" } } };
     expect(resolveRef(raw, "#/definitions/Pet")).toMatchObject({ type: "object" });
   });
+  it("does not support RFC 6901 escaped tokens (~0 for ~, ~1 for /)", () => {
+    const raw = { components: { schemas: { "a~b": { type: "object" } } } };
+    // A properly escaped ref would be "#/components/schemas/a~0b", but we don't support it
+    expect(resolveRef(raw, "#/components/schemas/a~0b")).toBeUndefined();
+  });
 });
 
 describe("flattenAllOf", () => {
@@ -107,17 +112,165 @@ describe("flattenAllOf", () => {
     });
   });
 
-  it("respects depth cap of 8", () => {
-    const createNested = (depth: number): unknown => {
-      if (depth === 0) {
-        return { type: "string" };
-      }
-      return { allOf: [createNested(depth - 1)] };
+  it("respects depth cap of 8 with boundary precision", () => {
+    // Build a 10-level allOf chain with distinct inline schemas, each adding one property
+    // Levels 0-7 should flatten (depth cap of 8), levels 8-9 should not
+    const schema = {
+      allOf: [
+        { properties: { p1: { type: "string" } } },
+        { allOf: [{ properties: { p2: { type: "string" } } }] }, // level 1
+        { allOf: [{ allOf: [{ properties: { p3: { type: "string" } } }] }] }, // level 2
+        { allOf: [{ allOf: [{ allOf: [{ properties: { p4: { type: "string" } } }] }] }] }, // level 3
+        { allOf: [{ allOf: [{ allOf: [{ allOf: [{ properties: { p5: { type: "string" } } }] }] }] }] }, // level 4
+        {
+          allOf: [
+            {
+              allOf: [
+                {
+                  allOf: [
+                    {
+                      allOf: [
+                        {
+                          allOf: [{ properties: { p6: { type: "string" } } }], // level 5
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          allOf: [
+            {
+              allOf: [
+                {
+                  allOf: [
+                    {
+                      allOf: [
+                        {
+                          allOf: [
+                            {
+                              allOf: [{ properties: { p7: { type: "string" } } }], // level 6
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          allOf: [
+            {
+              allOf: [
+                {
+                  allOf: [
+                    {
+                      allOf: [
+                        {
+                          allOf: [
+                            {
+                              allOf: [
+                                {
+                                  allOf: [{ properties: { p8: { type: "string" } } }], // level 7
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          allOf: [
+            {
+              allOf: [
+                {
+                  allOf: [
+                    {
+                      allOf: [
+                        {
+                          allOf: [
+                            {
+                              allOf: [
+                                {
+                                  allOf: [
+                                    {
+                                      allOf: [{ properties: { p9: { type: "string" } } }], // level 8 (exceeds cap)
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          allOf: [
+            {
+              allOf: [
+                {
+                  allOf: [
+                    {
+                      allOf: [
+                        {
+                          allOf: [
+                            {
+                              allOf: [
+                                {
+                                  allOf: [
+                                    {
+                                      allOf: [
+                                        {
+                                          allOf: [{ properties: { p10: { type: "string" } } }], // level 9 (exceeds cap)
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
     };
-    const raw = {};
-    const schema = createNested(10);
-    const result = flattenAllOf(schema, raw, 8);
-    expect(result).toBeDefined();
+
+    const result = flattenAllOf(schema, {}, 8);
+    const props = (result as Record<string, unknown>).properties as Record<string, unknown>;
+
+    // Properties within depth cap (p1-p8) should be flattened
+    for (let i = 1; i <= 8; i++) {
+      expect(props[`p${i}`]).toBeDefined();
+    }
+
+    // Properties beyond depth cap (p9, p10) should NOT be flattened
+    expect(props.p9).toBeUndefined();
+    expect(props.p10).toBeUndefined();
   });
 
   it("returns non-objects as-is", () => {
@@ -184,6 +337,42 @@ describe("flattenAllOf", () => {
     expect(result.type).toBe("number");
     expect(result.minLength).toBe(5);
   });
+
+  it("detects $ref cycles and marks with x-autoshim-circular", () => {
+    const raw = {
+      components: {
+        schemas: {
+          A: { allOf: [{ $ref: "#/components/schemas/B" }] },
+          B: { allOf: [{ $ref: "#/components/schemas/A" }] },
+        },
+      },
+    };
+    const schema = { allOf: [{ $ref: "#/components/schemas/A" }] };
+    const result = flattenAllOf(schema, raw);
+    // Should detect cycle and mark the circular ref
+    expect(result).toHaveProperty("x-autoshim-circular", true);
+  });
+
+  it("non-cyclic deep chain within depth still flattens fully", () => {
+    const raw = {
+      components: {
+        schemas: {
+          Base: { properties: { x: { type: "string" } } },
+          L1: { allOf: [{ $ref: "#/components/schemas/Base" }, { properties: { p1: { type: "string" } } }] },
+          L2: { allOf: [{ $ref: "#/components/schemas/L1" }, { properties: { p2: { type: "string" } } }] },
+          L3: { allOf: [{ $ref: "#/components/schemas/L2" }, { properties: { p3: { type: "string" } } }] },
+        },
+      },
+    };
+    const schema = { allOf: [{ $ref: "#/components/schemas/L3" }] };
+    const result = flattenAllOf(schema, raw);
+    const props = (result as Record<string, unknown>).properties as Record<string, unknown>;
+    // Should flatten all non-cyclic refs
+    expect(props.x).toBeDefined();
+    expect(props.p1).toBeDefined();
+    expect(props.p2).toBeDefined();
+    expect(props.p3).toBeDefined();
+  });
 });
 
 describe("normalizeNullable", () => {
@@ -226,5 +415,17 @@ describe("normalizeNullable", () => {
       description: "A nullable string",
       minLength: 1,
     });
+  });
+
+  it("leaves single-element type arrays unchanged", () => {
+    const schema = { type: ["string"] };
+    const result = normalizeNullable(schema);
+    expect(result).toEqual({ type: ["string"] });
+  });
+
+  it("leaves single-element type array with null unchanged", () => {
+    const schema = { type: ["null"] };
+    const result = normalizeNullable(schema);
+    expect(result).toEqual({ type: ["null"] });
   });
 });
