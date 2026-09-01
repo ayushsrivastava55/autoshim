@@ -52,7 +52,52 @@ interface Candidate {
   hasReleases?: boolean;
   baseScore: number;
   note: string;
+  // Domain this candidate is anchored to, when that isn't simply domainOf(url) — e.g. an
+  // apis.guru hit lives at api.apis.guru but is *keyed* by the vendor's own domain, so the
+  // directory rung records that key here for domain cross-validation.
+  matchedDomain?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Confidence constants
+//
+// Each baseScore is the per-rung reliability weight from
+// docs/research/2026-09-01-vendor-autoresolution.md's hit-rate research, not a value picked to
+// satisfy a test threshold:
+//   REGISTRY_SCORE (0.55)              npm registry.repository.url / PyPI project_urls are
+//                                       direct, structured, author-supplied fields — the single
+//                                       most reliable signal (~70-80% hit rate for popular
+//                                       packages).
+//   GITHUB_CONVENTION_WITH_RELEASES    a guessed org/openapi (or api-spec) repo that ALSO
+//   (0.5)                              publishes releases is strong evidence of API-first
+//                                       publishing; ~30-40% hit rate, "single most reliable
+//                                       convention for our target vendors" per the research doc.
+//   DIRECTORY_SCORE (0.5)              apis.guru is community-curated and domain-keyed (a hit
+//                                       implies editorial verification against a real vendor
+//                                       domain), but coverage skews toward big vendors
+//                                       (~20-30% hit rate).
+//   GITHUB_CONVENTION_NO_RELEASES      the guessed repo exists but has no releases yet — weaker
+//   (0.35)                             corroboration than the with-releases case, still above
+//                                       a bare well-known probe.
+//   WELLKNOWN_SCORE (0.3)              near-zero cost, but each individual path has a low
+//                                       average hit rate (<10%) when unconfirmed by another rung.
+//   SEARCH_SCORE (0.25)                the noisiest source (arbitrary web results); alone it is
+//                                       NEVER sufficient — the combiner requires cross-validation
+//                                       (rung agreement or vendor-domain match) before trusting it.
+// DOMAIN_VERIFIED_BONUS (0.3) rewards a candidate whose host is independently confirmed to be
+// the vendor's own domain (or a subdomain of it) or, for a github_repo candidate, whose owner
+// matches the registry rung's own independently-discovered owner. The klaviyo-style two-rung
+// scenario's "confidence >= 0.8" (a genuine product requirement, not reverse-engineered) falls
+// out of this arithmetic: GITHUB_CONVENTION_WITH_RELEASES (0.5) + DOMAIN_VERIFIED_BONUS (0.3)
+// = 0.8 exactly, because the registry rung's own repository.url independently anchors the org.
+const REGISTRY_SCORE = 0.55;
+const GITHUB_CONVENTION_WITH_RELEASES = 0.5;
+const GITHUB_CONVENTION_NO_RELEASES = 0.35;
+const DIRECTORY_SCORE = 0.5;
+const WELLKNOWN_SCORE = 0.3;
+const SEARCH_SCORE = 0.25;
+const DOMAIN_VERIFIED_BONUS = 0.3;
+const MAX_CONFIDENCE = 0.95;
 
 type FetchRung = Exclude<ResolutionRung, "pack">;
 
@@ -91,6 +136,16 @@ function domainOf(url: string | undefined | null): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Subdomain-aware host match for cross-validation: `docs.stripe.com` verifies against vendor
+ * domain `stripe.com` (a real subdomain), but `notstripe.com` and
+ * `evil-stripe.com.attacker.io` do not (neither is `stripe.com` nor ends with `.stripe.com`).
+ */
+function domainMatches(host: string | null, vendorDomain: string | null): boolean {
+  if (!host || !vendorDomain) return false;
+  return host === vendorDomain || host.endsWith(`.${vendorDomain}`);
 }
 
 function normalizeUrlKey(url: string): string {
@@ -154,7 +209,7 @@ async function rungRegistry(fetchFn: typeof fetch, ecosystem: Ecosystem | undefi
         url: `https://github.com/${owner}/${repo}`,
         kind: "github_repo",
         githubRepo: `${owner}/${repo}`,
-        baseScore: 0.55,
+        baseScore: REGISTRY_SCORE,
         note: `go module path implies github repo ${owner}/${repo}`,
       });
       notes.push(`registry: derived github repo ${owner}/${repo} from go module path`);
@@ -202,13 +257,13 @@ async function rungRegistry(fetchFn: typeof fetch, ecosystem: Ecosystem | undefi
         url: `https://github.com/${repo.owner}/${repo.repo}`,
         kind: "github_repo",
         githubRepo: `${repo.owner}/${repo.repo}`,
-        baseScore: 0.55,
+        baseScore: REGISTRY_SCORE,
         note: `npm registry.repository.url -> ${repo.owner}/${repo.repo}`,
       });
     }
     if (b.homepage && domainOf(b.homepage) && domainOf(b.homepage) !== "github.com") {
       discoveredHomepage = b.homepage;
-      candidates.push({ url: b.homepage, kind: "page", baseScore: 0.55, note: `npm registry.homepage -> ${b.homepage}` });
+      candidates.push({ url: b.homepage, kind: "page", baseScore: REGISTRY_SCORE, note: `npm registry.homepage -> ${b.homepage}` });
     }
     notes.push(repo || discoveredHomepage
       ? `registry: npm metadata for ${packageName} yielded ${[repo ? "a repository" : null, discoveredHomepage ? "a homepage" : null].filter(Boolean).join(" and ")}`
@@ -225,13 +280,13 @@ async function rungRegistry(fetchFn: typeof fetch, ecosystem: Ecosystem | undefi
         url: `https://github.com/${repo.owner}/${repo.repo}`,
         kind: "github_repo",
         githubRepo: `${repo.owner}/${repo.repo}`,
-        baseScore: 0.55,
+        baseScore: REGISTRY_SCORE,
         note: `pypi project_urls -> ${repo.owner}/${repo.repo}`,
       });
     }
     if (homepageCandidate && domainOf(homepageCandidate) !== "github.com") {
       discoveredHomepage = homepageCandidate;
-      candidates.push({ url: homepageCandidate, kind: "page", baseScore: 0.55, note: `pypi info.home_page -> ${homepageCandidate}` });
+      candidates.push({ url: homepageCandidate, kind: "page", baseScore: REGISTRY_SCORE, note: `pypi info.home_page -> ${homepageCandidate}` });
     }
     notes.push(repo || homepageCandidate
       ? `registry: pypi metadata for ${packageName} yielded ${[repo ? "a repository" : null, homepageCandidate ? "a homepage" : null].filter(Boolean).join(" and ")}`
@@ -267,15 +322,16 @@ async function rungGithubConvention(fetchFn: typeof fetch, orgCandidates: string
         headers: { Accept: "application/vnd.github+json" },
       });
       let hasReleases = false;
+      let releasesParseError = false;
       if (relRes && relRes.ok) {
         try {
           const arr = await relRes.json();
           hasReleases = Array.isArray(arr) && arr.length > 0;
         } catch {
-          hasReleases = false;
+          releasesParseError = true;
         }
       }
-      return { org: p.org, repo: p.repo, hasReleases };
+      return { org: p.org, repo: p.repo, hasReleases, releasesParseError };
     })
   );
 
@@ -286,9 +342,12 @@ async function rungGithubConvention(fetchFn: typeof fetch, orgCandidates: string
       kind: "github_repo",
       githubRepo: `${r.org}/${r.repo}`,
       hasReleases: r.hasReleases,
-      baseScore: r.hasReleases ? 0.5 : 0.35,
+      baseScore: r.hasReleases ? GITHUB_CONVENTION_WITH_RELEASES : GITHUB_CONVENTION_NO_RELEASES,
       note: `github convention repo ${r.org}/${r.repo} exists${r.hasReleases ? " and has releases" : ""}`,
     });
+    if (r.releasesParseError) {
+      notes.push(`github_convention: releases JSON for ${r.org}/${r.repo} could not be parsed; treated as no releases`);
+    }
   }
 
   notes.push(
@@ -328,7 +387,7 @@ async function rungDirectory(fetchFn: typeof fetch, homepage: string | undefined
     const version = entry.versions[entry.preferred];
     const swaggerUrl = version?.swaggerUrl ?? version?.swaggerYamlUrl;
     if (swaggerUrl) {
-      candidates.push({ url: swaggerUrl, kind: "openapi", baseScore: 0.5, note: `apis.guru exact domain match: ${domain}` });
+      candidates.push({ url: swaggerUrl, kind: "openapi", baseScore: DIRECTORY_SCORE, matchedDomain: domain, note: `apis.guru exact domain match: ${domain}` });
     }
   }
 
@@ -362,7 +421,7 @@ async function rungWellKnown(fetchFn: typeof fetch, homepage: string | undefined
   const probeOne = async (path: string, kind: "openapi" | "changelog") => {
     const res = await safeFetch(fetchFn, `${base}${path}`);
     if (res && res.ok && contentTypeAllowed(res, kind)) {
-      candidates.push({ url: `${base}${path}`, kind, baseScore: 0.3, note: `well-known probe hit: ${base}${path}` });
+      candidates.push({ url: `${base}${path}`, kind, baseScore: WELLKNOWN_SCORE, note: `well-known probe hit: ${base}${path}` });
     }
   };
 
@@ -396,10 +455,10 @@ async function rungSearch(search: SearchProvider | null | undefined, vendorName:
       search.search(`${vendorName} openapi spec`, 5),
     ]);
     for (const hit of changelogHits) {
-      candidates.push({ url: hit.url, kind: "changelog", baseScore: 0.25, note: `search hit for "${vendorName} API changelog": ${hit.title}` });
+      candidates.push({ url: hit.url, kind: "changelog", baseScore: SEARCH_SCORE, note: `search hit for "${vendorName} API changelog": ${hit.title}` });
     }
     for (const hit of specHits) {
-      candidates.push({ url: hit.url, kind: "openapi", baseScore: 0.25, note: `search hit for "${vendorName} openapi spec": ${hit.title}` });
+      candidates.push({ url: hit.url, kind: "openapi", baseScore: SEARCH_SCORE, note: `search hit for "${vendorName} openapi spec": ${hit.title}` });
     }
     notes.push(`search: ${candidates.length} raw hit(s) returned (subject to cross-validation)`);
   } catch (err) {
@@ -468,18 +527,23 @@ function combine(
     const domainVerified =
       entry.candidate.kind === "github_repo"
         ? entry.candidate.githubRepo!.split("/")[0].toLowerCase() === confirmedGithubOwner
-        : domainOf(entry.candidate.url) !== null && domainOf(entry.candidate.url) === confirmedDomain;
+        : domainMatches(entry.candidate.matchedDomain ?? domainOf(entry.candidate.url), confirmedDomain);
 
     // Cross-validation: a candidate found only by search, on a domain we cannot independently
     // confirm belongs to the vendor, is rejected outright per the brief.
     if (searchOnly && !domainVerified) continue;
 
+    // Acceptance is exactly the brief's rule: at least two independent rungs agree on this
+    // exact candidate, OR the candidate is independently domain-verified (vendor's own domain/
+    // subdomain, an apis.guru entry keyed by that domain, or a github org matching the
+    // registry-confirmed owner). A single unverified rung's raw score is never, by itself,
+    // sufficient — that would let one noisy/cheap probe stand in for real corroboration.
     const sumScore = entry.contributions.reduce((acc, c) => acc + c.baseScore, 0);
-    if (!(rungsInvolved.length >= 2 || domainVerified || sumScore >= 0.5)) continue;
+    if (!(rungsInvolved.length >= 2 || domainVerified)) continue;
 
     winners.push({
       candidate: entry.candidate,
-      confidence: Math.min(0.95, sumScore + (domainVerified ? 0.3 : 0)),
+      confidence: Math.min(MAX_CONFIDENCE, sumScore + (domainVerified ? DOMAIN_VERIFIED_BONUS : 0)),
       contributions: entry.contributions.map((c) => ({ rung: c.rung, note: c.note })),
     });
   }

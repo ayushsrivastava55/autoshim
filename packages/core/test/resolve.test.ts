@@ -91,30 +91,176 @@ describe("resolveVendorAuto", () => {
     expect(result).toBeNull();
   });
 
-  it("(iii) two-rung agreement on the same URL beats a single-rung candidate", async () => {
-    const domain = "acme.example";
-    const openapiUrl = wellKnown(domain, "/openapi.json");
-    const fetchFn = makeFakeFetch({
-      [NPM("acme-sdk")]: { status: 404 },
+  it("(iii) two-rung agreement is accepted where neither rung alone would be (no domain verification available)", async () => {
+    // No homepage given anywhere, and the registry rung finds nothing, so confirmedDomain stays
+    // null for this whole resolution: neither wellknown's nor search's hit on beta.com can be
+    // domain-verified. This isolates the pure "rungsInvolved.length >= 2" acceptance path from
+    // domain verification, and demonstrates it as an accept/reject boundary rather than a magic
+    // confidence number: identical inputs, minus the second rung, must flip the outcome to null.
+    const openapiUrl = wellKnown("beta.com", "/openapi.json");
+    const fetchFnBase: Record<string, FakeRoute> = {
+      [NPM("beta-sdk")]: { status: 404 },
       [GURU]: { status: 200, isJson: true, body: {} },
-      [wellKnown(domain, "/openapi.json")]: { status: 200, body: "{}" },
-      [wellKnown(domain, "/openapi.yaml")]: { status: 200, body: "openapi: 3.0.0" },
-    });
-    const search: SearchProvider = {
-      search: async (query: string) => (query.includes("openapi") ? [{ url: openapiUrl, title: "Acme OpenAPI spec" }] : []),
+      [openapiUrl]: { status: 200, body: "{}" },
     };
-    const deps: ResolveDeps = { fetchFn, search, registry: fakeRegistry() };
 
-    const result = await resolveVendorAuto({ packageName: "acme-sdk", ecosystem: "npm", name: "Acme", homepage: `https://${domain}` }, deps);
+    const twoRungSearch: SearchProvider = {
+      search: async (query: string) => (query.includes("openapi") ? [{ url: openapiUrl, title: "Beta OpenAPI spec" }] : []),
+    };
+    const twoRungResult = await resolveVendorAuto(
+      { packageName: "beta-sdk", ecosystem: "npm", name: "Beta" },
+      { fetchFn: makeFakeFetch(fetchFnBase), search: twoRungSearch, registry: fakeRegistry() }
+    );
+    expect(twoRungResult).not.toBeNull();
+    expect(twoRungResult!.vendor.openapi_url).toBe(openapiUrl);
 
-    expect(result).not.toBeNull();
-    expect(result!.vendor.openapi_url).toBe(openapiUrl);
-    const wellknownEntry = result!.resolution.find((r) => r.rung === "wellknown")!;
-    const searchEntry = result!.resolution.find((r) => r.rung === "search")!;
-    // Both rungs' entries should report the confidence of the winning (2-rung) candidate,
-    // which must exceed what either rung could achieve alone (wellknown alone: 0.3+0.3=0.6).
-    expect(wellknownEntry.confidence).toBeGreaterThan(0.6);
-    expect(searchEntry.confidence).toBeGreaterThan(0.6);
+    const singleRungResult = await resolveVendorAuto(
+      { packageName: "beta-sdk", ecosystem: "npm", name: "Beta" },
+      { fetchFn: makeFakeFetch(fetchFnBase), search: null, registry: fakeRegistry() }
+    );
+    expect(singleRungResult).toBeNull();
+  });
+
+  describe("(Finding 1) PyPI registry rung end-to-end", () => {
+    it("resolves via PyPI info.home_page / project_urls (real key casing)", async () => {
+      const PYPI = (pkg: string) => `https://pypi.org/pypi/${pkg}/json`;
+      const fetchFn = makeFakeFetch({
+        [PYPI("acme-py")]: {
+          status: 200,
+          isJson: true,
+          // Real shape verified live against https://pypi.org/pypi/stripe/json: info.home_page is
+          // frequently null, and the real signal lives in info.project_urls with LOWERCASE keys
+          // ("homepage", "source") — not the title-cased keys a naive implementation might assume.
+          body: {
+            info: {
+              home_page: null,
+              project_urls: {
+                homepage: "https://acme.io",
+                source: "https://github.com/acmeorg/acme-python",
+                issues: "https://github.com/acmeorg/acme-python/issues",
+              },
+            },
+          },
+        },
+        [GURU]: { status: 200, isJson: true, body: {} },
+      });
+      const deps: ResolveDeps = { fetchFn, search: null, registry: fakeRegistry() };
+
+      const result = await resolveVendorAuto({ packageName: "acme-py", ecosystem: "pypi", name: "AcmePy" }, deps);
+
+      expect(result).not.toBeNull();
+      expect(result!.vendor.homepage).toBe("https://acme.io");
+      expect(result!.vendor.github_repo).toBe("acmeorg/acme-python");
+      expect(result!.watch.targets).toContainEqual({ type: "page", url: "https://acme.io", detection: "semantic" });
+      const registryEntry = result!.resolution.find((r) => r.rung === "registry")!;
+      expect(registryEntry.evidence.join(" ")).toContain("acmeorg/acme-python");
+    });
+  });
+
+  describe("(Finding 2 + 3a) apis.guru directory rung", () => {
+    it("a lone directory hit whose apis.guru KEY equals the resolved vendor domain is accepted as domain-verified", async () => {
+      const swaggerUrl = "https://api.apis.guru/v2/specs/acme-corp.io/1.2.3/openapi.json";
+      const guruBody = {
+        "acme-corp.io": {
+          preferred: "1.2.3",
+          versions: {
+            "1.2.3": {
+              swaggerUrl,
+              swaggerYamlUrl: "https://api.apis.guru/v2/specs/acme-corp.io/1.2.3/openapi.yaml",
+            },
+          },
+        },
+      };
+      const routes: Record<string, FakeRoute> = {
+        [NPM("acme-directory-sdk")]: { status: 404 },
+        [GURU]: { status: 200, isJson: true, body: guruBody },
+      };
+
+      const verified = await resolveVendorAuto(
+        { packageName: "acme-directory-sdk", ecosystem: "npm", name: "AcmeCorp", homepage: "https://acme-corp.io" },
+        { fetchFn: makeFakeFetch(routes), search: null, registry: fakeRegistry() }
+      );
+      expect(verified).not.toBeNull();
+      expect(verified!.vendor.openapi_url).toBe(swaggerUrl);
+      expect(verified!.watch.targets).toContainEqual({ type: "openapi", url: swaggerUrl });
+
+      // Same directory entry, but nothing anchors the vendor domain to "acme-corp.io" this time
+      // (no homepage given, and the guessed vendorSlug-based domain doesn't match the guru key) —
+      // the identical directory hit is now unverified and alone, so it is rejected.
+      const unverified = await resolveVendorAuto(
+        { packageName: "acme-directory-sdk", ecosystem: "npm", name: "AcmeCorp" },
+        { fetchFn: makeFakeFetch(routes), search: null, registry: fakeRegistry() }
+      );
+      expect(unverified).toBeNull();
+    });
+  });
+
+  describe("(Finding 3b) search-only rejection restated", () => {
+    it("a lone search-rung candidate on an unconfirmed third-party domain is rejected regardless of its baseScore", async () => {
+      const fetchFn = makeFakeFetch({
+        [NPM("acme-sdk")]: { status: 404 },
+        [GURU]: { status: 200, isJson: true, body: {} },
+      });
+      const search: SearchProvider = {
+        search: async () => [{ url: "https://some-random-blog.example/acme-changelog", title: "Acme changelog (unofficial mirror)" }],
+      };
+      const result = await resolveVendorAuto({ packageName: "acme-sdk", ecosystem: "npm", name: "Acme" }, { fetchFn, search, registry: fakeRegistry() });
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("(Finding 4) subdomain-aware domain matching", () => {
+    const baseRoutes: Record<string, FakeRoute> = {
+      [NPM("stripe-test-pkg")]: { status: 404 },
+      [GURU]: { status: 200, isJson: true, body: {} },
+    };
+    const searchFor = (url: string): SearchProvider => ({
+      search: async (query: string) => (query.includes("changelog") ? [{ url, title: "hit" }] : []),
+    });
+    const resolve = (url: string) =>
+      resolveVendorAuto(
+        { packageName: "stripe-test-pkg", ecosystem: "npm", name: "Stripe", homepage: "https://stripe.com" },
+        { fetchFn: makeFakeFetch(baseRoutes), search: searchFor(url), registry: fakeRegistry() }
+      );
+
+    it("docs.stripe.com verifies as a subdomain of stripe.com -> accepted", async () => {
+      const url = "https://docs.stripe.com/changelog";
+      const result = await resolve(url);
+      expect(result).not.toBeNull();
+      expect(result!.vendor.changelog_url).toBe(url);
+    });
+
+    it("notstripe.com does NOT verify against stripe.com -> rejected", async () => {
+      const result = await resolve("https://notstripe.com/changelog");
+      expect(result).toBeNull();
+    });
+
+    it("evil-stripe.com.attacker.io does NOT verify against stripe.com -> rejected", async () => {
+      const result = await resolve("https://evil-stripe.com.attacker.io/changelog");
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("(Finding 6) github_convention releases parse failure", () => {
+    it("records a malformed releases-JSON body in evidence instead of silently swallowing it", async () => {
+      // A wellknown hit on the vendor's own confirmed homepage domain guarantees an overall
+      // non-null result (so `resolution` is populated) independent of what github_convention
+      // finds — isolating the assertion to that one rung's evidence.
+      const fetchFn = makeFakeFetch({
+        [NPM("gamma-sdk")]: { status: 404 },
+        [GURU]: { status: 200, isJson: true, body: {} },
+        [GH_REPO("gamma", "openapi")]: { status: 200, isJson: true, body: { id: 1, full_name: "gamma/openapi" } },
+        [GH_RELEASES("gamma", "openapi")]: { status: 200, body: "not valid json{" },
+        [wellKnown("gamma.io", "/changelog")]: { status: 200, body: "<html>v1</html>", contentType: "text/html" },
+      });
+      const deps: ResolveDeps = { fetchFn, search: null, registry: fakeRegistry() };
+
+      const result = await resolveVendorAuto({ packageName: "gamma-sdk", ecosystem: "npm", name: "Gamma", homepage: "https://gamma.io" }, deps);
+
+      expect(result).not.toBeNull();
+      const githubConventionEntry = result!.resolution.find((r) => r.rung === "github_convention")!;
+      expect(githubConventionEntry.evidence.join(" ")).toContain("could not be parsed");
+    });
   });
 
   it("(iv) total miss returns null, with every rung actually attempted", async () => {
