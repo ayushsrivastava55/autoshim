@@ -1,0 +1,18 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "petstore", "version": "1.0.0" },
+  "paths": {
+    "/v1/pets": {
+      "get": { "operationId": "listPets", "parameters": [ { "name": "limit", "in": "query", "schema": { "type": "integer" } } ],
+               "responses": { "200": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Pet" } } } } } },
+      "post": { "operationId": "createPet",
+                "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Pet" } } } } }
+    },
+    "/v1/pets/{id}": { "get": { "operationId": "getPet" } },
+    "/v1/stores": { "get": { "operationId": "listStores" } }
+  },
+  "components": { "schemas": {
+    "Pet": { "type": "object", "required": ["name"],
+             "properties": { "name": { "type": "string" }, "tag": { "type": "string" },
+                             "status": { "type": "string", "enum": ["available", "sold", "pending"] } } } } }
+}
