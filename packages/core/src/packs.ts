@@ -26,8 +26,7 @@ const PackSchema = z.object({
   github_repo: z.string().optional(),
   packages: z
     .record(z.enum(["npm", "pypi", "gomod", "rubygems"]), z.array(z.string()))
-    .optional()
-    .default({}) as any as z.ZodType<Partial<Record<Ecosystem, string[]>>>,
+    .optional(),
   import_patterns: z.record(z.array(z.string())),
   watch: z.array(
     z.object({
@@ -44,7 +43,10 @@ const PackSchema = z.object({
       notes: z.string().optional(),
     })
     .optional(),
-}) as z.ZodType<Pack>;
+}).transform((data) => ({
+  ...data,
+  packages: data.packages ?? {},
+}));
 
 export function parsePack(yamlText: string): Pack {
   let parsed: unknown;
@@ -110,6 +112,9 @@ export function loadPacks(yamlTexts: string[]): PackRegistry {
     },
     vendorFor(pack: Pack): Vendor {
       const sdk_packages: Array<{ ecosystem: Ecosystem; name: string }> = [];
+      // Cast justified: Object.entries returns Record<string, V> keys, but pack.packages
+      // is Partial<Record<Ecosystem, string[]>> where Ecosystem keys are validated by
+      // the schema to be one of ["npm", "pypi", "gomod", "rubygems"].
       for (const [ecosystem, names] of Object.entries(pack.packages) as Array<[Ecosystem, string[]]>) {
         for (const name of names) {
           sdk_packages.push({ ecosystem, name });
