@@ -5,3 +5,4 @@
 dist/
 fixtures/specs/downloaded/
 node_modules/
+.autoshim/watch/

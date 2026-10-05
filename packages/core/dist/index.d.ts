@@ -7,3 +7,6 @@ export * from "./resolve.js";
 export * from "./spec/load.js";
 export * from "./spec/diff.js";
 export * from "./spec/classify.js";
+export * from "./scan.js";
+export * from './sbom-proposal.js';
+export * from './sbom-runtime.js';
