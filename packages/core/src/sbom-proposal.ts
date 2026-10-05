@@ -45,7 +45,13 @@ export function proposeSbom(source:string,file:string,helper:string,hosts:readon
  const jsonCall=result.expression.expression.expression;
  if(jsonCall.arguments.length||!ts.isPropertyAccessExpression(jsonCall.expression)||jsonCall.expression.name.text!=='json'||!ts.isIdentifier(jsonCall.expression.expression)||jsonCall.expression.expression.text!==variable.name.text)return unavailable('Expected response.json().sbom');
  const body=`{\n  return await autoshimGithubSbom(${JSON.stringify(match[1])}, ${JSON.stringify(match[2])}, ${headerObject.getText(parsed)}, {approvedDownloadHosts: ${JSON.stringify(hosts)}});\n}`;
- const preview=`import { fetchGithubSbom as autoshimGithubSbom } from './autoshim-sbom.js';\n`+source.slice(0,fn.body.getStart(parsed))+body+source.slice(fn.body.end);
+ const shebang=ts.getShebang(source);
+ let importOffset=shebang?.length??0;
+ if(shebang){
+  if(source.charCodeAt(importOffset)===13&&source.charCodeAt(importOffset+1)===10)importOffset+=2;
+  else if(ts.isLineBreak(source.charCodeAt(importOffset)))importOffset++;
+ }
+ const preview=source.slice(0,importOffset)+`import { fetchGithubSbom as autoshimGithubSbom } from './autoshim-sbom.js';\n`+source.slice(importOffset,fn.body.getStart(parsed))+body+source.slice(fn.body.end);
  const helperFile=posix.join(posix.dirname(file),'autoshim-sbom.ts');
  const consumerPatch=createTwoFilesPatch('a/'+file,'b/'+file,source,preview);
  return {status:'proposed',validation:'not_run',sourceSha256:sbomHash(source),previewSha256:sbomHash(preview),helperSha256:sbomHash(helper),file,helperFile,line:parsed.getLineAndCharacterOfPosition(call.getStart(parsed)).line+1,preview,helper,consumerPatch,patch:consumerPatch+createTwoFilesPatch('/dev/null','b/'+helperFile,'',helper),evidence:['https://docs.github.com/en/rest/dependency-graph/sboms?apiVersion=2026-03-10','https://github.blog/changelog/2026-05-12-synchronous-sbom-api-deprecated/']};
