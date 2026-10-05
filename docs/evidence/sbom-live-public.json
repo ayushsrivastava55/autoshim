@@ -1,0 +1,67 @@
+{
+  "kind": "live_public_integration",
+  "repository": "octokit/rest.js",
+  "authentication": "none",
+  "apiVersion": "2026-03-10",
+  "startedAt": "2026-10-04T16:49:18.187Z",
+  "sourceSha256": "46a73fa3eb59b895f849ea30e5bc089fa8a8a51e90c6d648a5c529fcb0ea268d",
+  "previewSha256": "e0646e1db9901a97f9c37b5a2894db285b6ab70add85f2b33907cec0f7588bed",
+  "helperSha256": "f8fefc108afd15507da74bf596a5a62fd6ceae0ed758e8e0db413d1170c2b04a",
+  "events": [
+    {
+      "at": "2026-10-04T16:49:18.189Z",
+      "method": "GET",
+      "origin": "https://api.github.com",
+      "path": "/repos/octokit/rest.js/dependency-graph/sbom/generate-report",
+      "status": 201,
+      "authorizationSent": false,
+      "cookieSent": false,
+      "redirect": "manual",
+      "credentials": "omit",
+      "requestId": "281F:58547:D1D26A:ED4389:6AC2838E",
+      "serverDate": "Sun, 04 Oct 2026 16:49:18 GMT",
+      "contentType": "application/json; charset=utf-8"
+    },
+    {
+      "at": "2026-10-04T16:49:19.091Z",
+      "method": "GET",
+      "origin": "https://api.github.com",
+      "path": "/repos/octokit/rest.js/dependency-graph/sbom/fetch-report/a7503c1b-71d9-493e-af85-f9a9bb6a464b",
+      "status": 302,
+      "authorizationSent": false,
+      "cookieSent": false,
+      "redirect": "manual",
+      "credentials": "omit",
+      "requestId": "2821:37E824:D31634:EE830C:6AC2838F",
+      "serverDate": "Sun, 04 Oct 2026 16:49:19 GMT",
+      "contentType": "application/json; charset=utf-8"
+    },
+    {
+      "at": "2026-10-04T16:49:20.004Z",
+      "method": "GET",
+      "origin": "https://dgpproduction.blob.core.windows.net",
+      "status": 200,
+      "authorizationSent": false,
+      "cookieSent": false,
+      "redirect": "manual",
+      "credentials": "omit",
+      "requestId": "bd0437b7-a01e-0034-7020-5451e2000000",
+      "serverDate": "Sun, 04 Oct 2026 16:49:20 GMT",
+      "contentType": "text/plain; charset=utf-8"
+    }
+  ],
+  "status": "live_validated",
+  "completedAt": "2026-10-04T16:49:37.907Z",
+  "document": {
+    "SPDXID": "SPDXRef-DOCUMENT",
+    "spdxVersion": "SPDX-2.3",
+    "name": "com.github.octokit/rest.js",
+    "dataLicense": "CC0-1.0",
+    "packageCount": 1764,
+    "relationshipCount": 3480,
+    "storedBytes": 1636755,
+    "storedSha256": "c7d5a966b692f8b92436f83baa663f3db9aaf280f0b863279c04bd02c8ee57ae",
+    "file": "sbom.spdx.json",
+    "validation": "GitHub SPDX document fields, arrays and repository entry; not full SPDX schema certification"
+  }
+}
